@@ -25,6 +25,7 @@ Everything that is the product lives in `src/poser`:
 - `engine.ts`: `PoserEngine`. Scene, cameras, picking, undo/redo, every export and the preview strip.
 - `state.ts`: defaults, presets, `MAX_FIGURES`, the figure palette and color names, placement, and small pure helpers (selection, solo, lock, shortcuts).
 - `figure.ts`: `FigureView`, the skinned mesh, rig, markers and per-figure materials (including clay).
+- `claybody.ts`: pure helpers for the Clay body variants (neutral build, mannequin) that keep the skeleton and change only the volume.
 - `h3.ts`: pure helpers for MiniMax H3 Image (prompt wording in `H3_PROMPT`, left-to-right order, size suggestion).
 - `resolution.ts`, `openpose.ts`, `outline.ts`, `png.ts`, `zip.ts`, `pose.ts`, `ik.ts`, `face.ts`, `proportions.ts`, `mesh.ts`, `project.ts`, `types.ts`.
 - `ui/PoserApp.tsx`: all UI.
@@ -39,7 +40,7 @@ Everything outside `src/poser` (`src/lib`, `scripts/`, `server/`, `public/__grok
 ## Invariants
 
 - **Exports for existing scenes must not change.** The same scene and camera must produce byte-identical PNGs for every existing export. In particular the first four palette colors (`#3ecfb2 #e0a045 #d4654f #7aa2d4`) and their order are fixed, because masks and colored wires use them. New export passes must restore every material, light, background and visibility flag they change.
-- **Export all file names are fixed.** ComfyUI workflows load them by name (`openpose.png`, `wireframe.png`, `depth.png`, `normal.png`, `mask_combined.png`, `model.png`, `model_outline.png`, `mask_figureN.png`, `openpose_figureN.png`, `openpose.json`, `clay.png`, `h3_prompt.txt`, `settings.json`). Adding files is fine; renaming is not.
+- **Export all file names are fixed.** ComfyUI workflows load them by name (`openpose.png`, `wireframe.png`, `depth.png`, `normal.png`, `mask_combined.png`, `model.png`, `model_outline.png`, `mask_figureN.png`, `openpose_figureN.png`, `openpose.json`, `clay.png`, `clay_neutral.png`, `clay_mannequin.png`, `h3_prompt.txt`, `settings.json`). Adding files is fine; renaming is not.
 - **Old scene files must load.** Any new `FigureData` field gets a default in `normalizeFigure` (`state.ts`), and new `ExportSettings` fields get one in `defaultExport` (loadScene merges saved settings over the defaults).
 - New figure ids come from `nextFigureId`, which stays above every id in the scene, including after loadScene and undo/redo.
 - Export passes render offscreen while the live view keeps animating. `presentLiveView` resets the viewport every frame; anything an export changes that it does not reset (lights, extra meshes) must be put back before the first `await`.

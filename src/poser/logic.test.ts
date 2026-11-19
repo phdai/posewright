@@ -10,6 +10,7 @@ import { encodePngRGB, linearRgbToSrgb } from "./png.ts";
 import { mirrorPose, jointNames, jointsToPose, poseToJoints, nearestEuler, limitsFor } from "./pose.ts";
 import { projectToPixel } from "./project.ts";
 import { headLength, layoutFigure, statureOf, footHeel, TOE_DIGITS } from "./proportions.ts";
+import { CLAY_BODIES, NEUTRAL_BUILD, clayBodyOf, clayChest, claySegments } from "./claybody.ts";
 import { H3_MAX_AREA, H3_PROMPT, buildH3Prompt, ordinal, orderLeftToRight, suggestH3Size } from "./h3.ts";
 import { RESOLUTIONS, exportCameraFit, snapResolution } from "./resolution.ts";
 import {
@@ -690,5 +691,81 @@ describe("MiniMax H3 Image", () => {
     assert.equal(lines[1], "The figure (1st from the left) is the person in <Picture 2>.");
     assert.equal(lines[3], "The figure (3rd from the left) is the person in <Picture 4>.");
     assert.equal(lines[4], "Suggested output size: 4736 × 3552");
+  });
+});
+
+describe("clay body variants", () => {
+  const params = (patch: Partial<BodyParams> = {}): BodyParams => ({ ...adult, sex: 0.1, mass: 0.9, muscle: 0.8, shoulder: 1.2, hip: 1.25, ...patch });
+  const joints = (segs: ReturnType<typeof layoutFigure>) => segs.map((s) => [s.name, s.head, s.tail]);
+
+  it("defaults to the sliders' body and reads unknown values as that", () => {
+    assert.equal(defaultExport().clayBody, "sliders");
+    assert.equal(clayBodyOf(undefined), "sliders");
+    assert.equal(clayBodyOf("bogus"), "sliders");
+    assert.equal(clayBodyOf("neutral"), "neutral");
+    assert.deepEqual(CLAY_BODIES.map((b) => b.id), ["sliders", "neutral", "mannequin"]);
+  });
+
+  it("returns the figure's own segments for the sliders body", () => {
+    const real = layoutFigure(params());
+    assert.equal(claySegments(real, params(), "sliders", true), real);
+    assert.equal(clayChest("sliders"), true);
+  });
+
+  for (const body of ["neutral", "mannequin"] as const) {
+    it(`keeps every joint and the height for the ${body} body`, () => {
+      const p = params({ heightCm: 188, age: 40, leg: 1.1 });
+      const real = layoutFigure(p);
+      const out = claySegments(real, p, body, true);
+      assert.deepEqual(joints(out), joints(real));
+      assert.equal(statureOf(out), statureOf(real));
+      assert.equal(clayChest(body), false);
+    });
+
+    it(`makes the ${body} surface ignore the build sliders`, () => {
+      const heavy = params({ mass: 1, muscle: 1, sex: 0, shoulder: 1.3, hip: 1.3 });
+      const slim = params({ mass: 0, muscle: 0, sex: 1, shoulder: 0.8, hip: 0.8 });
+      const radii = (p: BodyParams) =>
+        claySegments(layoutFigure(p), p, body, true).map((s) => [s.name, s.rx0, s.rx1, s.rz0, s.rz1].map((v) => (typeof v === "number" ? v.toFixed(6) : v)));
+      assert.deepEqual(radii(heavy), radii(slim));
+    });
+  }
+
+  it("uses the neutral build's radii for the neutral body", () => {
+    const p = params();
+    const neutral = layoutFigure({ ...p, ...NEUTRAL_BUILD });
+    const out = claySegments(layoutFigure(p), p, "neutral", true);
+    for (const seg of out) {
+      const n = neutral.find((s) => s.name === seg.name);
+      assert.ok(n);
+      assert.equal(seg.rx0, n.rx0);
+      assert.equal(seg.rz1, n.rz1);
+    }
+  });
+
+  it("gives the mannequin slimmer, untapered limbs than the neutral body", () => {
+    const p = params();
+    const real = layoutFigure(p);
+    const neutral = claySegments(real, p, "neutral", true);
+    const man = claySegments(real, p, "mannequin", true);
+    for (const name of ["upperArm.L", "lowerLeg.R", "chest"]) {
+      const m = man.find((s) => s.name === name);
+      const n = neutral.find((s) => s.name === name);
+      assert.ok(m && n);
+      assert.equal(m.rx0, m.rx1);
+      assert.equal(m.rz0, m.rz1);
+      assert.ok(m.rx0 < Math.max(n.rx0, n.rx1));
+    }
+  });
+
+  it("switches the prompt to take body shape from the reference photos", () => {
+    const size = { width: 4096, height: 4096 };
+    const own = buildH3Prompt([{ color: "teal" }], size);
+    const ref = buildH3Prompt([{ color: "teal" }], size, undefined, { bodyFromReference: true });
+    assert.equal(own.split("\n")[0], H3_PROMPT.intro);
+    assert.equal(ref.split("\n")[0], H3_PROMPT.introReference);
+    assert.ok(H3_PROMPT.introReference.includes("height"));
+    assert.ok(H3_PROMPT.introReference.includes("body shape"));
+    assert.equal(own.split("\n").slice(1).join("\n"), ref.split("\n").slice(1).join("\n"));
   });
 });

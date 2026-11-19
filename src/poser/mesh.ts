@@ -147,6 +147,8 @@ export function buildFigureGeometry(
   segments: Segment[],
   params: BodyParams,
   boneIndex: Map<string, number>,
+  /** `chest: false` leaves out the chest volume (used by the neutral and mannequin clay bodies). */
+  opts: { chest?: boolean } = {},
 ): BufferGeometry {
   const b = new Builder();
   const byName = new Map(segments.map((s) => [s.name, s]));
@@ -171,7 +173,7 @@ export function buildFigureGeometry(
   // so children stay child-shaped. Geometric, not detailed.
   const chest = byName.get("chest");
   const chestBone = boneIndex.get("chest");
-  if (chest && chestBone !== undefined && params.sex < 0.8 && params.age > 14) {
+  if (opts.chest !== false && chest && chestBone !== undefined && params.sex < 0.8 && params.age > 14) {
     const k = (1 - params.sex) * Math.min(1, (params.age - 14) / 8);
     const y = chest.head.y + (chest.tail.y - chest.head.y) * 0.45;
     const r = chest.rx0 * 0.42 * (0.35 + k);

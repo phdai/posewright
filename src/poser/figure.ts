@@ -22,10 +22,11 @@ import {
   SphereGeometry,
   Vector3,
 } from "three";
-import type { PerspectiveCamera } from "three";
+import type { Material, PerspectiveCamera } from "three";
 import { clampFace, clampFaceOffsets, faceLineIndices, headAnchors, posedLandmarks } from "./face.ts";
 import { solveIk } from "./ik.ts";
 import { buildFigureGeometry } from "./mesh.ts";
+import { clayChest, claySegments, type ClayBody } from "./claybody.ts";
 import type { PersonPose, Keypoint } from "./openpose.ts";
 import { composedEuler, nearestEuler } from "./pose.ts";
 import { headLength, layoutFigure, segmentMap, footHeel, TOE_DIGITS, type Segment } from "./proportions.ts";
@@ -266,6 +267,25 @@ export class FigureView {
       this.group.add(o);
       this.targets.set(key, o);
     }
+  }
+
+  /**
+   * A second skinned mesh on this figure's skeleton with the clay body's volume
+   * (see claybody.ts). It follows the pose because it shares the bones. The caller
+   * removes it from the group and disposes its geometry after rendering.
+   */
+  createClayVariant(body: ClayBody, material: Material): SkinnedMesh {
+    const segs = claySegments(this.segments, this.data.params, body, this.data.detailedFeet === true);
+    const index = new Map(this.boneList.map((b, i) => [b.name, i]));
+    const geom = buildFigureGeometry(segs, this.data.params, index, { chest: clayChest(body) });
+    const mesh = new SkinnedMesh(geom, material);
+    mesh.frustumCulled = false;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    this.group.add(mesh);
+    this.group.updateMatrixWorld(true);
+    mesh.bind(this.skeleton, this.mesh.bindMatrix);
+    return mesh;
   }
 
   /** Bone quaternion as XYZ degrees. Pass the previous total so the result does not flip. */

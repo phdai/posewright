@@ -15,6 +15,7 @@ import {
   Scene,
   SRGBColorSpace,
   ShadowMaterial,
+  SkinnedMesh,
   Vector2,
   Vector3,
   Matrix4,
@@ -32,6 +33,7 @@ import { canvasToRgb, linearRgbToSrgb, pngBlob, rgbaToRgb } from "./png.ts";
 import { animaOutline } from "./outline.ts";
 import { exportCameraFit, snapResolution } from "./resolution.ts";
 import { buildH3Prompt, orderLeftToRight, suggestH3Size } from "./h3.ts";
+import { clayBodyOf, type ClayBody } from "./claybody.ts";
 import { projectToPixel } from "./project.ts";
 import { clampParams, headLength } from "./proportions.ts";
 import {
@@ -72,7 +74,9 @@ type ExportKind =
   | "mask-figure"
   | "model"
   | "model-outline"
-  | "clay";
+  | "clay"
+  | "clay-neutral"
+  | "clay-mannequin";
 
 /** Clay export look: plain light-grey backdrop, neutral body grey when tint is off. sRGB hex. */
 const CLAY_BACKGROUND = "#d6d6d6";
@@ -1507,6 +1511,8 @@ export class PoserEngine {
     }
     if (kind === "model" || kind === "model-outline") return this.modelBlob(width, height, kind === "model-outline");
     if (kind === "clay") return pngBlob(width, height, await this.clayRgb(width, height));
+    if (kind === "clay-neutral") return pngBlob(width, height, await this.clayRgb(width, height, "neutral"));
+    if (kind === "clay-mannequin") return pngBlob(width, height, await this.clayRgb(width, height, "mannequin"));
     throw new Error(`unknown export ${kind}`);
   }
 
@@ -1681,7 +1687,7 @@ export class PoserEngine {
    * MiniMax-H3-Image edit mode. Same camera and crop as every other export. The
    * clay material writes display (sRGB) bytes itself, see createClayMaterial.
    */
-  private async clayRgb(width: number, height: number): Promise<Uint8Array> {
+  private async clayRgb(width: number, height: number, body: ClayBody = clayBodyOf(this.state.export.clayBody)): Promise<Uint8Array> {
     const cam = this.exportCamera(width, height);
     const target = new WebGLRenderTarget(width, height, { depthBuffer: true, samples: 4 });
     target.texture.colorSpace = LinearSRGBColorSpace;
@@ -1698,6 +1704,15 @@ export class PoserEngine {
       target: this.sun.target.position.clone(),
     };
     const tint = this.state.export.clayTint !== false;
+    /** Neutral and mannequin bodies are temporary meshes on each figure's skeleton. */
+    const variants: SkinnedMesh[] = [];
+    const removeVariants = () => {
+      for (const m of variants) {
+        m.removeFromParent();
+        m.geometry.dispose();
+      }
+      variants.length = 0;
+    };
     // The live view keeps rendering while the readback is awaited. Put the lights and the
     // shadow catcher back as soon as the frame is drawn so the viewport never sees them.
     const restoreLights = () => {
@@ -1724,6 +1739,10 @@ export class PoserEngine {
         v.clay.color.set(tint ? v.data.color : CLAY_NEUTRAL);
         v.mesh.material = v.clay;
         v.mesh.visible = v.data.visible;
+        if (body !== "sliders" && v.data.visible) {
+          variants.push(v.createClayVariant(body, v.clay));
+          v.mesh.visible = false;
+        }
       }
       this.gizmo.getHelper().visible = false;
       this.clayGround.visible = true;
@@ -1757,11 +1776,13 @@ export class PoserEngine {
       this.exporter.clear(true, true, true);
       this.exporter.render(this.scene, cam);
       restoreLights();
+      removeVariants();
       const buf = new Uint8Array(width * height * 4);
       await this.exporter.readRenderTargetPixelsAsync(target, 0, 0, width, height, buf);
       return rgbaToRgb(buf, width, height, true);
     } finally {
       restoreLights();
+      removeVariants();
       this.exporter.setRenderTarget(null);
       target.dispose();
       this.exporter.shadowMap.enabled = prevShadow;
@@ -1815,6 +1836,8 @@ export class PoserEngine {
     const text = buildH3Prompt(
       ordered.map((fig) => ({ color: tint ? colorName(fig.color) : null })),
       suggestH3Size(width, height),
+      undefined,
+      { bodyFromReference: clayBodyOf(this.state.export.clayBody) !== "sliders" },
     );
     return { text, count: ordered.length };
   }
@@ -1851,6 +1874,9 @@ export class PoserEngine {
     await push("model_outline.png", await this.exportPng("model-outline"));
     await push("openpose.json", await this.exportJson());
     await push("clay.png", await this.exportPng("clay"));
+    // Variants for an A/B test in H3. clay.png already is whichever body is selected.
+    await push("clay_neutral.png", await this.exportPng("clay-neutral"));
+    await push("clay_mannequin.png", await this.exportPng("clay-mannequin"));
     items.push({ name: "h3_prompt.txt", data: new TextEncoder().encode(`${this.h3Prompt().text}\n`) });
     for (let i = 0; i < this.state.figures.length; i++) {
       if (!this.state.figures[i].visible) continue;

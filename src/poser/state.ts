@@ -150,6 +150,7 @@ export function defaultExport(): ExportSettings {
     depthAuto: true,
     overlay: "off",
     clayTint: true,
+    clayBody: "sliders",
   };
 }
 

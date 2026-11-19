@@ -90,6 +90,8 @@ export type ExportSettings = {
   overlay: "off" | "skeleton" | "align";
   /** Clay export: give each body its figure color. Off renders every body the same grey. */
   clayTint: boolean;
+  /** Clay body volume: the sliders' build, a neutral build, or a slim mannequin. The skeleton is the same. */
+  clayBody: "sliders" | "neutral" | "mannequin";
 };
 
 export type SceneState = {

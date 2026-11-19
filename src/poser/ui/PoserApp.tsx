@@ -4,6 +4,7 @@ import { BODY_PRESETS, MAX_FIGURES, isSoloed } from "../state.ts";
 import { POSE_PRESETS, jointGroup, jointLabel, jointNames, limitsFor } from "../pose.ts";
 import { FACE_GROUPS, FACE_PRESETS, faceGroupOf } from "../face.ts";
 import { RESOLUTIONS, snapResolution } from "../resolution.ts";
+import { CLAY_BODIES, clayBodyOf } from "../claybody.ts";
 import { heightLimits } from "../proportions.ts";
 import type { BodyParams, FaceShape, FigureData, GizmoTool, HandPreset, ToePreset } from "../types.ts";
 
@@ -782,6 +783,28 @@ function ExportPanel({
         <input type="checkbox" checked={settings.clayTint} onChange={(e) => engine.setExport({ clayTint: e.target.checked })} />
         Tint by figure color
       </label>
+      <label
+        className="text-xs text-muted"
+        title="Body volume in the Clay export and preview. All three keep the skeleton, so pose, joints and height match the sliders and the OpenPose export."
+      >
+        Clay body
+        <select
+          className="mt-1 w-full rounded-sm border border-line bg-bg px-2 py-1 text-sm text-fg"
+          value={clayBodyOf(settings.clayBody)}
+          onChange={(e) => engine.setExport({ clayBody: clayBodyOf(e.target.value) })}
+        >
+          {CLAY_BODIES.map((b) => (
+            <option key={b.id} value={b.id} title={b.title}>
+              {b.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      {clayBodyOf(settings.clayBody) !== "sliders" && (
+        <p className="text-xs text-muted">
+          The H3 prompt now asks for each person&apos;s face, body shape, hair and clothing from their reference picture. Height still follows the sliders.
+        </p>
+      )}
       <H3Prompt engine={engine} />
       <label className="flex min-h-11 items-center gap-2 text-sm" title="Black lines on white">
         <input type="checkbox" checked={settings.wireInvert} onChange={(e) => engine.setExport({ wireInvert: e.target.checked })} />

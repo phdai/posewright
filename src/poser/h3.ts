@@ -5,18 +5,22 @@
  */
 
 /**
- * All prompt wording lives here. Placeholders:
+ * All prompt wording lives here. `intro` is used when the clay bodies follow the
+ * body sliders; `introReference` when they are the neutral build or the mannequin,
+ * so each person's body shape comes from their reference photo. Placeholders:
  * - figure: {color} (palette color name, or empty when tint is off), {ordinal}, {picture}
  * - size: {width}, {height}
  */
 export const H3_PROMPT = {
   intro:
     "Turn the 3D figures in <Picture 1> into a photorealistic scene. Keep every figure's pose, position, size and the camera angle exactly as in <Picture 1>.",
+  introReference:
+    "Turn the 3D figures in <Picture 1> into a photorealistic scene. Keep every figure's pose, position, height and the camera angle exactly as in <Picture 1>. The figures only mark pose and placement: take each person's face, body shape, hair and clothing from their reference picture.",
   figure: "The {color} figure ({ordinal} from the left) is the person in <Picture {picture}>.",
   size: "Suggested output size: {width} × {height}",
 } as const;
 
-export type H3PromptTemplate = { intro: string; figure: string; size: string };
+export type H3PromptTemplate = { intro: string; introReference: string; figure: string; size: string };
 
 /** H3 accepts up to 16 pictures. <Picture 1> is the pose image, so at most 15 people. */
 export const H3_MAX_REFERENCES = 15;
@@ -110,8 +114,9 @@ export function buildH3Prompt(
   figures: { color: string | null }[],
   size: { width: number; height: number },
   template: H3PromptTemplate = H3_PROMPT,
+  opts: { bodyFromReference?: boolean } = {},
 ): string {
-  const lines = [template.intro];
+  const lines = [opts.bodyFromReference ? template.introReference : template.intro];
   figures.slice(0, H3_MAX_REFERENCES).forEach((fig, i) => {
     lines.push(fill(template.figure, { color: fig.color ?? "", ordinal: ordinal(i + 1), picture: i + 2 }));
   });
