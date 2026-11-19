@@ -1,6 +1,6 @@
 # Posewright
 
-A local 3D posing bench. Place up to four procedural human figures, pose them with forward or inverse kinematics, and export pixel-aligned ControlNet conditioning images for ComfyUI. Nothing is downloaded at runtime. The body mesh is generated in the browser.
+A local 3D posing bench. Place up to ten procedural human figures, pose them with forward or inverse kinematics, and export pixel-aligned ControlNet conditioning images for ComfyUI. Nothing is downloaded at runtime. The body mesh is generated in the browser.
 
 ## Run
 

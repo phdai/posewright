@@ -1,9 +1,77 @@
 import { NEUTRAL_FACE, emptyFaceOffsets } from "./face.ts";
-import { v3, type BodyParams, type ExportSettings, type FigureData, type SceneState } from "./types.ts";
+import { v3, type BodyParams, type ExportSettings, type FigureData, type SceneState, type Vec3 } from "./types.ts";
 import { clampParams } from "./proportions.ts";
 import { poseById, writeHand, type Pose } from "./pose.ts";
 
-export const FIGURE_COLORS = ["#3ecfb2", "#e0a045", "#d4654f", "#7aa2d4"];
+/** Most figures a scene holds. Every cap in the engine and the UI reads this. */
+export const MAX_FIGURES = 10;
+
+/**
+ * Figure colors, used for masks, colored wires and the viewport. The first four
+ * were the whole palette before ten figures, so older scenes export the same masks.
+ */
+export const FIGURE_COLORS = [
+  "#3ecfb2",
+  "#e0a045",
+  "#d4654f",
+  "#7aa2d4",
+  "#a66bd9",
+  "#8fc04a",
+  "#e87fc0",
+  "#4b55d6",
+  "#f0e25a",
+  "#8a5a3c",
+];
+
+/** First palette color no figure is using. Falls back to cycling when every color is taken. */
+export function nextFreeColor(figures: { color: string }[]): string {
+  const used = new Set(figures.map((f) => f.color.toLowerCase()));
+  return FIGURE_COLORS.find((c) => !used.has(c)) ?? FIGURE_COLORS[figures.length % FIGURE_COLORS.length];
+}
+
+/** Spots for new figures: rows of five, 0.9 m apart in X, each later row 1.1 m further back. */
+export const SPOT_COLUMNS = 5;
+export const SPOT_STEP_X = 0.9;
+export const SPOT_STEP_Z = 1.1;
+/** A spot is taken when a figure stands within this distance of it on the ground. */
+export const SPOT_RADIUS = 0.5;
+
+export function spotPosition(index: number): Vec3 {
+  const col = index % SPOT_COLUMNS;
+  const row = Math.floor(index / SPOT_COLUMNS);
+  return v3(col * SPOT_STEP_X, 0, row === 0 ? 0 : -row * SPOT_STEP_Z);
+}
+
+/** First spot with no figure standing within SPOT_RADIUS, measured on the ground plane. */
+export function nextFreeSpot(figures: { position: Vec3 }[]): Vec3 {
+  for (let i = 0; i < 1000; i++) {
+    const spot = spotPosition(i);
+    const taken = figures.some((f) => Math.hypot(f.position.x - spot.x, f.position.z - spot.z) < SPOT_RADIUS);
+    if (!taken) return spot;
+  }
+  return spotPosition(figures.length);
+}
+
+/** Next numeric figure id, kept above every `fN` id in the scene so a new figure never reuses one. */
+export function nextFigureId(figures: { id: string }[], current: number): number {
+  let max = 0;
+  for (const f of figures) {
+    const m = /^f(\d+)$/.exec(f.id);
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return Math.max(current, max + 1);
+}
+
+/** Keep a saved selection only when it points at a figure in the scene. Otherwise select the first one. */
+export function validSelection(
+  selection: SceneState["selection"] | undefined,
+  figures: { id: string }[],
+): SceneState["selection"] {
+  if (selection && selection.figureId && figures.some((f) => f.id === selection.figureId)) {
+    return { figureId: selection.figureId, bone: selection.bone ?? null, facePoint: selection.facePoint ?? null };
+  }
+  return { figureId: figures[0]?.id ?? null, bone: null };
+}
 
 export const BODY_PRESETS: { id: string; name: string; params: BodyParams }[] = [
   {

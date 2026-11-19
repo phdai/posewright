@@ -11,7 +11,18 @@ import { mirrorPose, jointNames, jointsToPose, poseToJoints, nearestEuler, limit
 import { projectToPixel } from "./project.ts";
 import { headLength, layoutFigure, statureOf, footHeel, TOE_DIGITS } from "./proportions.ts";
 import { exportCameraFit, snapResolution } from "./resolution.ts";
-import { clone, defaultScene, makeFigure } from "./state.ts";
+import {
+  FIGURE_COLORS,
+  MAX_FIGURES,
+  SPOT_RADIUS,
+  clone,
+  defaultScene,
+  makeFigure,
+  nextFigureId,
+  nextFreeColor,
+  nextFreeSpot,
+  validSelection,
+} from "./state.ts";
 import type { BodyParams } from "./types.ts";
 import { encodeZip } from "./zip.ts";
 
@@ -411,5 +422,85 @@ describe("anima outline", () => {
     assert.deepEqual(at(0, 0), [0, 0, 0]);
     assert.deepEqual(at(5, 5), [55, 95, 175]);
     assert.deepEqual(at(4, 6), [200, 160, 80]);
+  });
+});
+
+describe("figure palette and placement", () => {
+  const rgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+
+  /** Add figures the way the engine does: first free color, first free spot. */
+  const addFigure = (figures: ReturnType<typeof makeFigure>[], id: number) => {
+    const fig = makeFigure(id);
+    fig.color = nextFreeColor(figures);
+    fig.position = nextFreeSpot(figures);
+    figures.push(fig);
+    return fig;
+  };
+
+  it("has one distinct color per figure slot, the first four unchanged", () => {
+    assert.equal(FIGURE_COLORS.length, MAX_FIGURES);
+    assert.equal(new Set(FIGURE_COLORS.map((c) => c.toLowerCase())).size, FIGURE_COLORS.length);
+    assert.deepEqual(FIGURE_COLORS.slice(0, 4), ["#3ecfb2", "#e0a045", "#d4654f", "#7aa2d4"]);
+  });
+
+  it("keeps every pair of colors far apart and every color far from the black mask background", () => {
+    for (let i = 0; i < FIGURE_COLORS.length; i++) {
+      const [r, g, b] = rgb(FIGURE_COLORS[i]);
+      assert.ok(Math.hypot(r, g, b) > 150, `${FIGURE_COLORS[i]} is too close to black`);
+      assert.ok(0.2126 * r + 0.7152 * g + 0.0722 * b > 80, `${FIGURE_COLORS[i]} is too dark`);
+      for (let j = i + 1; j < FIGURE_COLORS.length; j++) {
+        const a = rgb(FIGURE_COLORS[i]);
+        const c = rgb(FIGURE_COLORS[j]);
+        const d = Math.hypot(a[0] - c[0], a[1] - c[1], a[2] - c[2]);
+        assert.ok(d >= 60, `${FIGURE_COLORS[i]} and ${FIGURE_COLORS[j]} are only ${d.toFixed(1)} apart`);
+      }
+    }
+  });
+
+  it("fills to the cap with no shared color or spot", () => {
+    const figures = [makeFigure(1)];
+    for (let id = 2; figures.length < MAX_FIGURES; id++) addFigure(figures, id);
+    assert.equal(new Set(figures.map((f) => f.color)).size, MAX_FIGURES);
+    assert.deepEqual(figures.map((f) => f.color), FIGURE_COLORS);
+    for (let i = 0; i < figures.length; i++) {
+      for (let j = i + 1; j < figures.length; j++) {
+        const a = figures[i].position;
+        const b = figures[j].position;
+        assert.ok(Math.hypot(a.x - b.x, a.z - b.z) >= SPOT_RADIUS, `figures ${i + 1} and ${j + 1} share a spot`);
+      }
+    }
+    assert.deepEqual(figures[4].position, { x: 3.6, y: 0, z: 0 });
+    assert.ok(Math.abs(figures[5].position.z + 1.1) < 1e-9);
+    assert.equal(figures[5].position.x, 0);
+  });
+
+  it("reuses a deleted figure's color and spot", () => {
+    const figures = [makeFigure(1)];
+    for (let id = 2; id <= 6; id++) addFigure(figures, id);
+    const gone = figures.splice(2, 1)[0];
+    const fresh = addFigure(figures, 7);
+    assert.equal(fresh.color, gone.color);
+    assert.deepEqual(fresh.position, gone.position);
+  });
+
+  it("treats a figure within half a meter as occupying a spot", () => {
+    const fig = makeFigure(1);
+    fig.position = { x: 0.3, y: 0, z: 0.2 };
+    assert.deepEqual(nextFreeSpot([fig]), { x: 0.9, y: 0, z: 0 });
+    fig.position = { x: 0.6, y: 0, z: 0 };
+    assert.deepEqual(nextFreeSpot([fig]), { x: 0, y: 0, z: 0 });
+  });
+
+  it("keeps the next id above every id in the scene", () => {
+    assert.equal(nextFigureId([{ id: "f1" }, { id: "f7" }, { id: "f3" }], 2), 8);
+    assert.equal(nextFigureId([{ id: "f1" }], 12), 12);
+    assert.equal(nextFigureId([{ id: "custom" }], 1), 1);
+  });
+
+  it("falls back to the first figure when the saved selection is gone", () => {
+    const figures = [{ id: "f2" }, { id: "f5" }];
+    assert.deepEqual(validSelection({ figureId: "f9", bone: "head" }, figures), { figureId: "f2", bone: null });
+    assert.equal(validSelection({ figureId: "f5", bone: "head" }, figures).figureId, "f5");
+    assert.deepEqual(validSelection(undefined, []), { figureId: null, bone: null });
   });
 });

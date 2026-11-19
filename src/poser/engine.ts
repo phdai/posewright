@@ -32,11 +32,16 @@ import { exportCameraFit, snapResolution } from "./resolution.ts";
 import { clampParams, headLength } from "./proportions.ts";
 import {
   BODY_PRESETS,
+  MAX_FIGURES,
   clone,
   defaultScene,
   downloadBlob,
   makeFigure,
+  nextFigureId,
+  nextFreeColor,
+  nextFreeSpot,
   stamp,
+  validSelection,
 } from "./state.ts";
 import type { BodyParams, CameraMode, FaceShape, FigureData, GizmoTool, HandPreset, SceneState, ToePreset, Vec3 } from "./types.ts";
 import { zipBlob, type ZipItem } from "./zip.ts";
@@ -130,6 +135,7 @@ export class PoserEngine {
   private overlay: HTMLCanvasElement;
   private crop: HTMLDivElement;
   private hint: HTMLDivElement;
+  private resizeObserver: ResizeObserver;
   private undoStack: string[] = [];
   private redoStack: string[] = [];
   private raf = 0;
@@ -257,8 +263,8 @@ export class PoserEngine {
     window.addEventListener("keyup", this.onKeyUp);
     document.addEventListener("pointerlockchange", this.onLock);
     window.addEventListener("blur", this.clearKeys);
-    const ro = new ResizeObserver(() => this.resize());
-    ro.observe(host);
+    this.resizeObserver = new ResizeObserver(() => this.resize());
+    this.resizeObserver.observe(host);
     this.resize();
     this.syncGizmo();
     this.tick = this.tick.bind(this);
@@ -337,7 +343,7 @@ export class PoserEngine {
     }
     for (const stale of live.values()) stale.dispose();
     this.views = next;
-    this.nextId = Math.max(this.nextId, ...this.state.figures.map((f) => Number(f.id.slice(1)) || 0)) + 1;
+    this.nextId = nextFigureId(this.state.figures, this.nextId);
     this.touch();
   }
 
@@ -355,10 +361,11 @@ export class PoserEngine {
   }
 
   addFigure(presetId = "adult-f") {
-    if (this.state.figures.length >= 4) return;
+    if (this.state.figures.length >= MAX_FIGURES) return;
     this.pushHistory();
     const fig = makeFigure(this.nextId++, presetId);
-    fig.position.x = this.state.figures.length * 0.9;
+    fig.color = nextFreeColor(this.state.figures);
+    fig.position = nextFreeSpot(this.state.figures);
     this.state.figures.push(fig);
     this.state.selection = { figureId: fig.id, bone: null };
     this.attachView(fig, true);
@@ -382,13 +389,13 @@ export class PoserEngine {
 
   duplicateSelected() {
     const src = this.selected();
-    if (!src || this.state.figures.length >= 4) return;
+    if (!src || this.state.figures.length >= MAX_FIGURES) return;
     this.pushHistory();
     const fig = clone(src.data);
     fig.id = `f${this.nextId++}`;
     fig.name = `${src.data.name} copy`;
     fig.position = { ...src.data.position, x: src.data.position.x + 0.55 };
-    fig.color = ["#3ecfb2", "#e0a045", "#d4654f", "#7aa2d4"][this.state.figures.length % 4];
+    fig.color = nextFreeColor(this.state.figures);
     this.state.figures.push(fig);
     this.state.selection = { figureId: fig.id, bone: null };
     this.attachView(fig, false);
@@ -1663,8 +1670,8 @@ export class PoserEngine {
     this.pushHistory();
     for (const v of this.views) v.dispose();
     this.views = [];
-    this.state.figures = data.state.figures.slice(0, 4);
-    this.state.selection = data.state.selection ?? { figureId: this.state.figures[0]?.id ?? null, bone: null };
+    this.state.figures = data.state.figures.slice(0, MAX_FIGURES);
+    this.state.selection = validSelection(data.state.selection, this.state.figures);
     this.state.jointLimits = data.state.jointLimits ?? true;
     this.state.showJoints = data.state.showJoints ?? true;
     this.state.showBody = data.state.showBody ?? true;
@@ -1675,6 +1682,7 @@ export class PoserEngine {
       this.normalizeFigure(fig);
       this.attachView(fig, false);
     }
+    this.nextId = nextFigureId(this.state.figures, this.nextId);
     if (data.camera) this.applyCamera(data.camera);
     this.touch();
   }
@@ -1926,6 +1934,7 @@ export class PoserEngine {
       setCameraMode: (mode: CameraMode) => engine.setCameraMode(mode),
       frameAll: () => engine.frameAll(),
       figureCount: () => engine.state.figures.length,
+      figures: () => clone(engine.state.figures),
     };
     window.__controlsTest = {
       getYaw: () => engine.fly.yaw,
@@ -1943,6 +1952,16 @@ export class PoserEngine {
     window.clearTimeout(this.previewTimer);
     window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("keyup", this.onKeyUp);
+    window.removeEventListener("blur", this.clearKeys);
+    document.removeEventListener("pointerlockchange", this.onLock);
+    this.resizeObserver.disconnect();
+    for (const v of this.views) v.dispose();
+    this.views = [];
+    // React mounts twice in dev. Leave nothing behind that could cover the live engine's canvas.
+    this.renderer.domElement.remove();
+    this.overlay.remove();
+    this.crop.remove();
+    this.hint.remove();
     this.renderer.dispose();
     this.exporter.dispose();
     this.orbit.dispose();
@@ -1958,6 +1977,8 @@ declare global {
       setCameraMode: (mode: CameraMode) => void;
       frameAll: () => void;
       figureCount: () => number;
+      /** Read-only copy of the scene's figures, for browser checks. */
+      figures: () => FigureData[];
     };
     __controlsTest?: {
       getYaw: () => number;

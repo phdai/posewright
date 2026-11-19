@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type MutableRefObject } from "react";
 import { PoserEngine } from "../engine.ts";
-import { BODY_PRESETS } from "../state.ts";
+import { BODY_PRESETS, MAX_FIGURES } from "../state.ts";
 import { POSE_PRESETS, jointGroup, jointLabel, jointNames, limitsFor } from "../pose.ts";
 import { FACE_GROUPS, FACE_PRESETS, faceGroupOf } from "../face.ts";
 import { RESOLUTIONS, snapResolution } from "../resolution.ts";
@@ -59,6 +59,7 @@ export function PoserApp() {
       depth: els.depth ?? undefined,
       normal: els.normal ?? undefined,
       mask: els.mask ?? undefined,
+      model: els.model ?? undefined,
       align: els.align ?? undefined,
     });
   }, [engine, tab]);
@@ -80,11 +81,11 @@ export function PoserApp() {
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <aside className={`${panelClass(tab === "figure")} lg:flex lg:w-80 lg:flex-col lg:border-r`}>
           {engine && state && (
-            <FigurePanel engine={engine} figures={state.figures} selected={selected} atCap={state.figures.length >= 4} />
+            <FigurePanel engine={engine} figures={state.figures} selected={selected} atCap={state.figures.length >= MAX_FIGURES} />
           )}
         </aside>
         <div className={`${tab === "stage" || tab === "face" ? "flex" : "hidden"} relative min-h-[40vh] flex-1 flex-col lg:flex`}>
-          <div ref={hostRef} className="relative min-h-0 w-full flex-1" />
+          <div ref={hostRef} className="relative min-h-0 w-full flex-1 overflow-hidden" />
         </div>
         <aside className={`${tab === "pose" || tab === "face" || tab === "export" ? "flex" : "hidden"} min-h-0 flex-col lg:flex lg:w-96 lg:border-l`}>
           {engine && state && (
@@ -199,7 +200,7 @@ export function PoserApp() {
             ?
           </button>
           <span className="ml-auto hidden text-xs text-muted sm:inline">
-            {state.figures.length}/4 · {state.jointLimits ? "Limits on" : "Limits off"}
+            {state.figures.length}/{MAX_FIGURES} · {state.jointLimits ? "Limits on" : "Limits off"}
           </span>
         </footer>
       )}
@@ -235,13 +236,13 @@ function FigurePanel({
     <div className="scroll-thin flex min-h-0 flex-1 flex-col gap-3 overflow-auto p-3">
       <div className="flex items-center justify-between">
         <h1 className="text-sm font-semibold tracking-wide">Posewright</h1>
-        <button type="button" title={atCap ? "Four figures is the maximum" : "Add a figure"} className={btn()} disabled={atCap} onClick={() => engine.addFigure()}>
+        <button type="button" title={atCap ? `${MAX_FIGURES} figures is the maximum` : "Add a figure"} className={btn()} disabled={atCap} onClick={() => engine.addFigure()}>
           Add figure
         </button>
       </div>
-      <ul className="flex flex-col gap-1">
+      <ul className="scroll-thin flex max-h-64 shrink-0 flex-col gap-1 overflow-auto">
         {figures.map((fig) => (
-          <li key={fig.id} className={`flex items-center gap-2 rounded-sm border px-2 py-1 ${fig.id === selected?.id ? "border-accent" : "border-line"}`}>
+          <li key={fig.id} className={`flex shrink-0 items-center gap-2 rounded-sm border px-2 py-1 ${fig.id === selected?.id ? "border-accent" : "border-line"}`}>
             <button type="button" title={`Select ${fig.name}`} className="flex min-h-11 flex-1 items-center gap-2 text-left text-sm" onClick={() => engine.selectFigure(fig.id)}>
               <span className="inline-block size-3 rounded-full" style={{ background: fig.color }} />
               <span className="truncate">{fig.name}</span>
@@ -255,7 +256,7 @@ function FigurePanel({
       {selected && (
         <>
           <div className="flex gap-2">
-            <button type="button" title="Duplicate this figure" className={btn()} disabled={atCap} onClick={() => engine.duplicateSelected()}>
+            <button type="button" title={atCap ? `${MAX_FIGURES} figures is the maximum` : "Duplicate this figure"} className={btn()} disabled={atCap} onClick={() => engine.duplicateSelected()}>
               Duplicate
             </button>
             <button type="button" title="Delete the selected figure (Del)" className={btn()} onClick={() => engine.deleteSelected()}>
