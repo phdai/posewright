@@ -23,6 +23,26 @@ export const FIGURE_COLORS = [
   "#8a5a3c",
 ];
 
+/** Plain-English name for each palette color, in palette order. Prompts use these to name a figure. */
+export const FIGURE_COLOR_NAMES = [
+  "teal",
+  "amber",
+  "coral",
+  "sky blue",
+  "purple",
+  "lime green",
+  "pink",
+  "royal blue",
+  "yellow",
+  "brown",
+];
+
+/** Name of a palette color, or null for a color outside the palette (an edited scene file, say). */
+export function colorName(hex: string): string | null {
+  const i = FIGURE_COLORS.indexOf(hex.toLowerCase());
+  return i < 0 ? null : (FIGURE_COLOR_NAMES[i] ?? null);
+}
+
 /** First palette color no figure is using. Falls back to cycling when every color is taken. */
 export function nextFreeColor(figures: { color: string }[]): string {
   const used = new Set(figures.map((f) => f.color.toLowerCase()));
@@ -129,6 +149,7 @@ export function defaultExport(): ExportSettings {
     wireAA: false,
     depthAuto: true,
     overlay: "off",
+    clayTint: true,
   };
 }
 

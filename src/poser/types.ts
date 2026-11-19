@@ -88,6 +88,8 @@ export type ExportSettings = {
   wireAA: boolean;
   depthAuto: boolean;
   overlay: "off" | "skeleton" | "align";
+  /** Clay export: give each body its figure color. Off renders every body the same grey. */
+  clayTint: boolean;
 };
 
 export type SceneState = {

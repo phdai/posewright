@@ -60,6 +60,7 @@ export function PoserApp() {
       normal: els.normal ?? undefined,
       mask: els.mask ?? undefined,
       model: els.model ?? undefined,
+      clay: els.clay ?? undefined,
       align: els.align ?? undefined,
     });
   }, [engine, tab]);
@@ -672,10 +673,19 @@ function ExportPanel({
             engine.setExport({ preset: id, width: preset.width, height: preset.height });
           }}
         >
-          {RESOLUTIONS.map((r) => (
+          {RESOLUTIONS.filter((r) => !r.group).map((r) => (
             <option key={r.id} value={r.id}>
               {r.label}
             </option>
+          ))}
+          {[...new Set(RESOLUTIONS.flatMap((r) => (r.group ? [r.group] : [])))].map((group) => (
+            <optgroup key={group} label={group}>
+              {RESOLUTIONS.filter((r) => r.group === group).map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.label}
+                </option>
+              ))}
+            </optgroup>
           ))}
         </select>
       </label>
@@ -753,6 +763,14 @@ function ExportPanel({
         >
           3D outline
         </button>
+        <button
+          type="button"
+          title="Matte clay bodies with a soft ground shadow on light grey. Use it as <Picture 1> in MiniMax H3 Image edit mode."
+          className={btn()}
+          onClick={() => void engine.download("clay")}
+        >
+          Clay
+        </button>
         <button type="button" title="Download OpenPose JSON" className={btn()} onClick={() => void engine.downloadJson()}>
           JSON
         </button>
@@ -760,6 +778,11 @@ function ExportPanel({
           Export all
         </button>
       </div>
+      <label className="flex min-h-11 items-center gap-2 text-sm" title="Clay export: give each body its figure color so a prompt can name it. Off renders every body the same grey.">
+        <input type="checkbox" checked={settings.clayTint} onChange={(e) => engine.setExport({ clayTint: e.target.checked })} />
+        Tint by figure color
+      </label>
+      <H3Prompt engine={engine} />
       <label className="flex min-h-11 items-center gap-2 text-sm" title="Black lines on white">
         <input type="checkbox" checked={settings.wireInvert} onChange={(e) => engine.setExport({ wireInvert: e.target.checked })} />
         Invert wire
@@ -806,6 +829,7 @@ function ExportPanel({
             ["normal", "Normal"],
             ["mask", "Mask"],
             ["model", "Model"],
+            ["clay", "Clay"],
           ] as const
         ).map(([id, label]) => (
           <figure key={id} className="overflow-hidden rounded-sm border border-line bg-bg">
@@ -821,6 +845,45 @@ function ExportPanel({
         ))}
       </div>
       <p className="text-xs text-muted">{count} figure{count === 1 ? "" : "s"} in the scene. The frame overlay matches the export crop.</p>
+    </div>
+  );
+}
+
+/** Copies the MiniMax H3 edit prompt and shows what was copied. */
+function H3Prompt({ engine }: { engine: PoserEngine }) {
+  const [shown, setShown] = useState<{ text: string; note: string } | null>(null);
+  const copy = async () => {
+    const { text, count } = engine.h3Prompt();
+    let note = `Copied. ${count} figure${count === 1 ? "" : "s"}, left to right.`;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      note = "The browser blocked the clipboard. Select the text below and copy it.";
+    }
+    setShown({ text, note });
+  };
+  return (
+    <div className="flex flex-col gap-1">
+      <button
+        type="button"
+        title="Copy a prompt for MiniMax H3 Image edit mode. Visible figures are listed left to right; the first is <Picture 2>."
+        className={`${btn()} self-start`}
+        onClick={() => void copy()}
+      >
+        Copy H3 prompt
+      </button>
+      {shown && (
+        <>
+          <p className="text-xs text-muted">{shown.note}</p>
+          <textarea
+            readOnly
+            aria-label="H3 prompt"
+            className="h-32 w-full resize-y rounded-sm border border-line bg-bg p-2 font-mono text-xs text-fg"
+            value={shown.text}
+            onFocus={(e) => e.currentTarget.select()}
+          />
+        </>
+      )}
     </div>
   );
 }

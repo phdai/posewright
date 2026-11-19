@@ -10,12 +10,16 @@ import { encodePngRGB, linearRgbToSrgb } from "./png.ts";
 import { mirrorPose, jointNames, jointsToPose, poseToJoints, nearestEuler, limitsFor } from "./pose.ts";
 import { projectToPixel } from "./project.ts";
 import { headLength, layoutFigure, statureOf, footHeel, TOE_DIGITS } from "./proportions.ts";
-import { exportCameraFit, snapResolution } from "./resolution.ts";
+import { H3_MAX_AREA, H3_PROMPT, buildH3Prompt, ordinal, orderLeftToRight, suggestH3Size } from "./h3.ts";
+import { RESOLUTIONS, exportCameraFit, snapResolution } from "./resolution.ts";
 import {
   FIGURE_COLORS,
+  FIGURE_COLOR_NAMES,
   MAX_FIGURES,
   SPOT_RADIUS,
   clone,
+  colorName,
+  defaultExport,
   defaultScene,
   isExportAllKey,
   isPickable,
@@ -556,5 +560,135 @@ describe("solo, lock and shortcuts", () => {
     assert.equal(isExportAllKey(k("e", false), "orbit"), false);
     assert.equal(isExportAllKey(k("E", true), "fly"), false);
     assert.equal(isExportAllKey(k("E", true, { ctrlKey: true }), "orbit"), false);
+  });
+});
+
+describe("MiniMax H3 Image", () => {
+  const pt = (x: number, y = 100, behind = false) => ({ x, y, behind });
+
+  it("names every palette color in palette order", () => {
+    assert.deepEqual(FIGURE_COLOR_NAMES, [
+      "teal",
+      "amber",
+      "coral",
+      "sky blue",
+      "purple",
+      "lime green",
+      "pink",
+      "royal blue",
+      "yellow",
+      "brown",
+    ]);
+    assert.equal(colorName("#3ECFB2"), "teal");
+    assert.equal(colorName("#8a5a3c"), "brown");
+    assert.equal(colorName("#123456"), null);
+  });
+
+  it("tints clay by figure color unless turned off", () => {
+    assert.equal(defaultExport().clayTint, true);
+  });
+
+  it("offers the H3 presets on the 32 px grid", () => {
+    const want = ["2048x2048", "1536x2048", "2048x1536", "1152x2048", "2048x1152", "3136x1344"];
+    const h3 = RESOLUTIONS.filter((r) => r.group).map((r) => `${r.width}x${r.height}`);
+    assert.deepEqual(h3, want);
+    for (const r of RESOLUTIONS.filter((x) => x.group)) {
+      assert.equal(r.width % 32, 0);
+      assert.equal(r.height % 32, 0);
+      assert.deepEqual(snapResolution(r.width, r.height), { width: r.width, height: r.height, snapped: false, warn64: false });
+    }
+    assert.ok(RESOLUTIONS.some((r) => r.id === "768" && !r.group), "existing presets stay");
+  });
+
+  it("writes English ordinals", () => {
+    assert.deepEqual([1, 2, 3, 4, 10, 11, 12, 13, 21, 22, 23].map(ordinal), [
+      "1st",
+      "2nd",
+      "3rd",
+      "4th",
+      "10th",
+      "11th",
+      "12th",
+      "13th",
+      "21st",
+      "22nd",
+      "23rd",
+    ]);
+  });
+
+  it("orders figures left to right by where they appear in the frame", () => {
+    const order = orderLeftToRight(
+      [
+        { item: "right", points: [pt(600), pt(640)] },
+        { item: "left", points: [pt(50), pt(90)] },
+        { item: "middle", points: [pt(300), pt(340)] },
+      ],
+      768,
+      768,
+    );
+    assert.deepEqual(order, ["left", "middle", "right"]);
+  });
+
+  it("uses only the in-frame part of a figure and drops figures not in the picture", () => {
+    const order = orderLeftToRight(
+      [
+        // Mostly off the left edge; the visible part sits at x 20.
+        { item: "edge", points: [pt(-900), pt(-800), pt(20)] },
+        { item: "inside", points: [pt(10), pt(30)] },
+        { item: "behind", points: [pt(100, 100, true)] },
+        { item: "outside", points: [pt(2000), pt(-5, 900)] },
+      ],
+      768,
+      768,
+    );
+    assert.deepEqual(order, ["edge", "inside"]);
+    assert.deepEqual(orderLeftToRight([{ item: "a", points: [pt(5)] }, { item: "b", points: [pt(5)] }], 10, 200), ["a", "b"]);
+  });
+
+  it("suggests the largest 32-grid size within 16,777,216 pixels that keeps the aspect", () => {
+    assert.deepEqual(suggestH3Size(768, 768), { width: 4096, height: 4096 });
+    assert.deepEqual(suggestH3Size(2048, 2048), { width: 4096, height: 4096 });
+    // The ComfyUI table lists 3552 × 4736 for 3:4, but that is 16,822,272 pixels, over the cap.
+    assert.deepEqual(suggestH3Size(1536, 2048), { width: 3520, height: 4704 });
+    assert.deepEqual(suggestH3Size(2048, 1536), { width: 4704, height: 3520 });
+    for (const [w, h] of [
+      [3136, 1344],
+      [1152, 2048],
+      [832, 1216],
+      [512, 768],
+      [1000, 333],
+    ]) {
+      const s = suggestH3Size(w, h);
+      assert.equal(s.width % 32, 0);
+      assert.equal(s.height % 32, 0);
+      assert.ok(s.width * s.height <= H3_MAX_AREA, `${w}x${h} -> ${s.width}x${s.height}`);
+      // Within half a grid step of the true aspect on the short edge.
+      const err = Math.abs(s.width / s.height - w / h) / (w / h);
+      assert.ok(err <= 16 / Math.min(s.width, s.height) + 1e-9, `${w}x${h} -> ${s.width}x${s.height} err ${err}`);
+      // Nothing larger on the grid keeps the aspect at least as well.
+      for (let ww = s.width; ww <= s.width + 256; ww += 32) {
+        const hh = Math.round(ww / (w / h) / 32) * 32;
+        if (ww * hh > s.width * s.height) assert.ok(ww * hh > H3_MAX_AREA, `${ww}x${hh} also fits`);
+      }
+    }
+    assert.deepEqual(suggestH3Size(3136, 1344), { width: 6240, height: 2688 });
+  });
+
+  it("builds the prompt with one line per figure and the suggested size", () => {
+    const text = buildH3Prompt([{ color: "teal" }, { color: "amber" }], { width: 4096, height: 4096 });
+    assert.deepEqual(text.split("\n"), [
+      H3_PROMPT.intro,
+      "The teal figure (1st from the left) is the person in <Picture 2>.",
+      "The amber figure (2nd from the left) is the person in <Picture 3>.",
+      "Suggested output size: 4096 × 4096",
+    ]);
+  });
+
+  it("leaves the color word out when tint is off", () => {
+    const text = buildH3Prompt([{ color: null }, { color: null }, { color: null }], { width: 4736, height: 3552 });
+    const lines = text.split("\n");
+    assert.equal(lines[1], "The figure (1st from the left) is the person in <Picture 2>.");
+    assert.equal(lines[3], "The figure (3rd from the left) is the person in <Picture 4>.");
+    assert.equal(lines[4], "Suggested output size: 4736 × 3552");
   });
 });

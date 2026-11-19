@@ -10,9 +10,11 @@ import {
   MeshStandardMaterial,
   PCFShadowMap,
   PerspectiveCamera,
+  PlaneGeometry,
   Raycaster,
   Scene,
   SRGBColorSpace,
+  ShadowMaterial,
   Vector2,
   Vector3,
   Matrix4,
@@ -29,11 +31,14 @@ import { mirrorPose, poseById, writeHand, writeToes, composedEuler, clampEuler, 
 import { canvasToRgb, linearRgbToSrgb, pngBlob, rgbaToRgb } from "./png.ts";
 import { animaOutline } from "./outline.ts";
 import { exportCameraFit, snapResolution } from "./resolution.ts";
+import { buildH3Prompt, orderLeftToRight, suggestH3Size } from "./h3.ts";
+import { projectToPixel } from "./project.ts";
 import { clampParams, headLength } from "./proportions.ts";
 import {
   BODY_PRESETS,
   MAX_FIGURES,
   clone,
+  colorName,
   defaultScene,
   downloadBlob,
   isExportAllKey,
@@ -57,7 +62,21 @@ function pngColor(hex: string): Color {
   return new Color().setRGB(srgb.r, srgb.g, srgb.b, LinearSRGBColorSpace);
 }
 
-type ExportKind = "openpose" | "wire" | "depth" | "normal" | "mask" | "openpose-figure" | "mask-figure" | "model" | "model-outline";
+type ExportKind =
+  | "openpose"
+  | "wire"
+  | "depth"
+  | "normal"
+  | "mask"
+  | "openpose-figure"
+  | "mask-figure"
+  | "model"
+  | "model-outline"
+  | "clay";
+
+/** Clay export look: plain light-grey backdrop, neutral body grey when tint is off. sRGB hex. */
+const CLAY_BACKGROUND = "#d6d6d6";
+const CLAY_NEUTRAL = "#9c9c9c";
 
 const IK_BONE: Record<string, string> = {
   "hand.L": "handL",
@@ -130,6 +149,10 @@ export class PoserEngine {
   private gizmo: TransformControls;
   private grid: GridHelper;
   private ground: Mesh;
+  /** Shadow catcher for the Clay export. Hidden in every other pass. */
+  private clayGround: Mesh;
+  private hemi: HemisphereLight;
+  private sun: DirectionalLight;
   private helpers: Object3D[] = [];
   private raycaster = new Raycaster();
   private pointer = new Vector2();
@@ -154,6 +177,7 @@ export class PoserEngine {
     normal?: HTMLCanvasElement;
     mask?: HTMLCanvasElement;
     model?: HTMLCanvasElement;
+    clay?: HTMLCanvasElement;
     align?: HTMLCanvasElement;
   } = {};
   private previewTimer = 0;
@@ -217,6 +241,8 @@ export class PoserEngine {
     sun.shadow.camera.top = 6;
     sun.shadow.camera.bottom = -6;
     this.scene.add(hemi, sun);
+    this.hemi = hemi;
+    this.sun = sun;
 
     this.ground = new Mesh(
       new CircleGeometry(16, 64),
@@ -229,6 +255,11 @@ export class PoserEngine {
     this.grid.position.y = 0.001;
     this.scene.add(this.grid);
     this.helpers.push(this.ground, this.grid);
+    this.clayGround = new Mesh(new PlaneGeometry(60, 60), new ShadowMaterial({ color: "#000000", opacity: 0.3 }));
+    this.clayGround.rotation.x = -Math.PI / 2;
+    this.clayGround.receiveShadow = true;
+    this.clayGround.visible = false;
+    this.scene.add(this.clayGround);
 
     this.orbit = new OrbitControls(this.camera, this.renderer.domElement);
     this.orbit.target.set(0, 0.95, 0);
@@ -907,6 +938,7 @@ export class PoserEngine {
     else this.scene.background = new Color("#14181d");
     for (const helper of this.helpers) helper.visible = true;
     this.grid.visible = this.state.showGrid;
+    this.clayGround.visible = false;
     this.gizmo.getHelper().visible = true;
     for (const view of this.views) {
       const selected = view.data.id === this.state.selection.figureId;
@@ -1474,6 +1506,7 @@ export class PoserEngine {
       });
     }
     if (kind === "model" || kind === "model-outline") return this.modelBlob(width, height, kind === "model-outline");
+    if (kind === "clay") return pngBlob(width, height, await this.clayRgb(width, height));
     throw new Error(`unknown export ${kind}`);
   }
 
@@ -1643,6 +1676,149 @@ export class PoserEngine {
     }
   }
 
+  /**
+   * Matte clay bodies with soft shading and a ground shadow on light grey, for
+   * MiniMax-H3-Image edit mode. Same camera and crop as every other export. The
+   * clay material writes display (sRGB) bytes itself, see createClayMaterial.
+   */
+  private async clayRgb(width: number, height: number): Promise<Uint8Array> {
+    const cam = this.exportCamera(width, height);
+    const target = new WebGLRenderTarget(width, height, { depthBuffer: true, samples: 4 });
+    target.texture.colorSpace = LinearSRGBColorSpace;
+    const prevBg = this.scene.background;
+    const prevShadow = this.exporter.shadowMap.enabled;
+    const prevShadowType = this.exporter.shadowMap.type;
+    const prevHemi = { sky: this.hemi.color.clone(), ground: this.hemi.groundColor.clone(), intensity: this.hemi.intensity };
+    const prevSun = {
+      intensity: this.sun.intensity,
+      radius: this.sun.shadow.radius,
+      bias: this.sun.shadow.bias,
+      normalBias: this.sun.shadow.normalBias,
+      position: this.sun.position.clone(),
+      target: this.sun.target.position.clone(),
+    };
+    const tint = this.state.export.clayTint !== false;
+    // The live view keeps rendering while the readback is awaited. Put the lights and the
+    // shadow catcher back as soon as the frame is drawn so the viewport never sees them.
+    const restoreLights = () => {
+      this.hemi.color.copy(prevHemi.sky);
+      this.hemi.groundColor.copy(prevHemi.ground);
+      this.hemi.intensity = prevHemi.intensity;
+      this.sun.intensity = prevSun.intensity;
+      this.sun.shadow.radius = prevSun.radius;
+      this.sun.shadow.bias = prevSun.bias;
+      this.sun.shadow.normalBias = prevSun.normalBias;
+      this.sun.position.copy(prevSun.position);
+      this.sun.target.position.copy(prevSun.target);
+      this.sun.updateMatrixWorld();
+      this.sun.target.updateMatrixWorld();
+      this.clayGround.visible = false;
+    };
+    try {
+      this.scene.background = pngColor(CLAY_BACKGROUND);
+      for (const h of this.helpers) h.visible = false;
+      for (const v of this.views) {
+        for (const m of v.markers.values()) m.visible = false;
+        v.setFaceGuide(false);
+        v.setViewportBody(true);
+        v.clay.color.set(tint ? v.data.color : CLAY_NEUTRAL);
+        v.mesh.material = v.clay;
+        v.mesh.visible = v.data.visible;
+      }
+      this.gizmo.getHelper().visible = false;
+      this.clayGround.visible = true;
+      // Soft studio light that follows the export camera, so the faces the camera sees are lit
+      // from any orbit angle: a bright sky fill plus a key from above and to the camera's left
+      // that throws a blurred shadow behind the figures.
+      const center = this.figureCenter(cam);
+      const toCam = cam.position.clone().sub(center);
+      toCam.y = 0;
+      if (toCam.lengthSq() < 1e-6) toCam.set(0, 0, 1);
+      toCam.normalize();
+      const left = new Vector3().crossVectors(new Vector3(0, 1, 0), toCam).normalize();
+      const keyDir = toCam.multiplyScalar(0.9).addScaledVector(left, 0.6).add(new Vector3(0, 1.4, 0)).normalize();
+      this.sun.position.copy(center).addScaledVector(keyDir, 8);
+      this.sun.target.position.copy(center);
+      this.sun.updateMatrixWorld();
+      this.sun.target.updateMatrixWorld();
+      this.hemi.color.set("#ffffff");
+      this.hemi.groundColor.set("#b4b1ab");
+      this.hemi.intensity = 2.3;
+      this.sun.intensity = 2.6;
+      this.sun.shadow.radius = 6;
+      // Keeps the blurred shadow from striping the bodies (shadow acne).
+      this.sun.shadow.bias = -0.0004;
+      this.sun.shadow.normalBias = 0.015;
+      this.exporter.shadowMap.enabled = true;
+      this.exporter.shadowMap.type = PCFShadowMap;
+      this.exporter.setSize(width, height, false);
+      this.exporter.setRenderTarget(target);
+      this.exporter.setClearColor(pngColor(CLAY_BACKGROUND), 1);
+      this.exporter.clear(true, true, true);
+      this.exporter.render(this.scene, cam);
+      restoreLights();
+      const buf = new Uint8Array(width * height * 4);
+      await this.exporter.readRenderTargetPixelsAsync(target, 0, 0, width, height, buf);
+      return rgbaToRgb(buf, width, height, true);
+    } finally {
+      restoreLights();
+      this.exporter.setRenderTarget(null);
+      target.dispose();
+      this.exporter.shadowMap.enabled = prevShadow;
+      this.exporter.shadowMap.type = prevShadowType;
+      this.scene.background = prevBg;
+      for (const h of this.helpers) h.visible = true;
+      this.grid.visible = this.state.showGrid;
+      this.gizmo.getHelper().visible = true;
+      for (const v of this.views) {
+        v.mesh.material = v.beauty;
+        v.setViewportBody(this.state.showBody);
+      }
+    }
+  }
+
+  /** Middle of the visible figures' joints on the ground plane, or the point the camera looks at. */
+  private figureCenter(cam: PerspectiveCamera): Vector3 {
+    const sum = new Vector3();
+    const p = new Vector3();
+    let n = 0;
+    for (const v of this.views) {
+      if (!v.data.visible) continue;
+      for (const bone of v.bones.values()) {
+        sum.add(bone.getWorldPosition(p));
+        n += 1;
+      }
+    }
+    if (n > 0) return sum.multiplyScalar(1 / n).setY(0);
+    const dir = new Vector3();
+    cam.getWorldDirection(dir);
+    return cam.position.clone().addScaledVector(dir, 3).setY(0);
+  }
+
+  /**
+   * Prompt for H3 edit mode: visible figures in the export frame, left to right,
+   * mapped to <Picture 2>, <Picture 3>, … The color word is left out when tint is off.
+   */
+  h3Prompt(): { text: string; count: number } {
+    const { width, height } = this.state.export;
+    const cam = this.exportCamera(width, height);
+    const p = new Vector3();
+    const projected = this.views
+      .filter((v) => v.data.visible)
+      .map((v) => {
+        v.group.updateMatrixWorld(true);
+        const points = [...v.bones.values()].map((bone) => projectToPixel(bone.getWorldPosition(p), cam, width, height));
+        return { item: v.data, points };
+      });
+    const ordered = orderLeftToRight(projected, width, height);
+    const tint = this.state.export.clayTint !== false;
+    const text = buildH3Prompt(
+      ordered.map((fig) => ({ color: tint ? colorName(fig.color) : null })),
+      suggestH3Size(width, height),
+    );
+    return { text, count: ordered.length };
+  }
+
   private async modelBlob(width: number, height: number, outline: boolean): Promise<Blob> {
     const color = await this.shadedRgb(width, height);
     if (!outline) return pngBlob(width, height, color);
@@ -1674,6 +1850,8 @@ export class PoserEngine {
     await push("model.png", await this.exportPng("model"));
     await push("model_outline.png", await this.exportPng("model-outline"));
     await push("openpose.json", await this.exportJson());
+    await push("clay.png", await this.exportPng("clay"));
+    items.push({ name: "h3_prompt.txt", data: new TextEncoder().encode(`${this.h3Prompt().text}\n`) });
     for (let i = 0; i < this.state.figures.length; i++) {
       if (!this.state.figures[i].visible) continue;
       const n = i + 1;
@@ -1929,6 +2107,7 @@ export class PoserEngine {
     await paint(this.preview.normal, await this.smallNormal(ww, h));
     await paint(this.preview.mask, await this.smallMask(ww, h));
     await paint(this.preview.model, await this.modelBlob(ww, h, false));
+    if (this.preview.clay) await paint(this.preview.clay, pngBlob(ww, h, await this.clayRgb(ww, h)));
     if (this.preview.align) {
       const align = document.createElement("canvas");
       align.width = ww;
