@@ -10,8 +10,28 @@ import { encodePngRGB, linearRgbToSrgb } from "./png.ts";
 import { mirrorPose, jointNames, jointsToPose, poseToJoints, nearestEuler, limitsFor } from "./pose.ts";
 import { projectToPixel } from "./project.ts";
 import { headLength, layoutFigure, statureOf, footHeel, TOE_DIGITS } from "./proportions.ts";
-import { exportCameraFit, snapResolution } from "./resolution.ts";
-import { clone, defaultScene, makeFigure } from "./state.ts";
+import { H3_MAX_AREA, H3_PROMPT, buildH3Prompt, ordinal, orderLeftToRight, suggestH3Size } from "./h3.ts";
+import { RESOLUTIONS, exportCameraFit, snapResolution } from "./resolution.ts";
+import {
+  FIGURE_COLORS,
+  FIGURE_COLOR_NAMES,
+  MAX_FIGURES,
+  SPOT_RADIUS,
+  clone,
+  colorName,
+  defaultExport,
+  defaultScene,
+  isExportAllKey,
+  isPickable,
+  isSoloed,
+  makeFigure,
+  nextFigureId,
+  nextFreeColor,
+  nextFreeSpot,
+  normalizeFigure,
+  soloVisibility,
+  validSelection,
+} from "./state.ts";
 import type { BodyParams } from "./types.ts";
 import { encodeZip } from "./zip.ts";
 
@@ -411,5 +431,264 @@ describe("anima outline", () => {
     assert.deepEqual(at(0, 0), [0, 0, 0]);
     assert.deepEqual(at(5, 5), [55, 95, 175]);
     assert.deepEqual(at(4, 6), [200, 160, 80]);
+  });
+});
+
+describe("figure palette and placement", () => {
+  const rgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+
+  /** Add figures the way the engine does: first free color, first free spot. */
+  const addFigure = (figures: ReturnType<typeof makeFigure>[], id: number) => {
+    const fig = makeFigure(id);
+    fig.color = nextFreeColor(figures);
+    fig.position = nextFreeSpot(figures);
+    figures.push(fig);
+    return fig;
+  };
+
+  it("has one distinct color per figure slot, the first four unchanged", () => {
+    assert.equal(FIGURE_COLORS.length, MAX_FIGURES);
+    assert.equal(new Set(FIGURE_COLORS.map((c) => c.toLowerCase())).size, FIGURE_COLORS.length);
+    assert.deepEqual(FIGURE_COLORS.slice(0, 4), ["#3ecfb2", "#e0a045", "#d4654f", "#7aa2d4"]);
+  });
+
+  it("keeps every pair of colors far apart and every color far from the black mask background", () => {
+    for (let i = 0; i < FIGURE_COLORS.length; i++) {
+      const [r, g, b] = rgb(FIGURE_COLORS[i]);
+      assert.ok(Math.hypot(r, g, b) > 150, `${FIGURE_COLORS[i]} is too close to black`);
+      assert.ok(0.2126 * r + 0.7152 * g + 0.0722 * b > 80, `${FIGURE_COLORS[i]} is too dark`);
+      for (let j = i + 1; j < FIGURE_COLORS.length; j++) {
+        const a = rgb(FIGURE_COLORS[i]);
+        const c = rgb(FIGURE_COLORS[j]);
+        const d = Math.hypot(a[0] - c[0], a[1] - c[1], a[2] - c[2]);
+        assert.ok(d >= 60, `${FIGURE_COLORS[i]} and ${FIGURE_COLORS[j]} are only ${d.toFixed(1)} apart`);
+      }
+    }
+  });
+
+  it("fills to the cap with no shared color or spot", () => {
+    const figures = [makeFigure(1)];
+    for (let id = 2; figures.length < MAX_FIGURES; id++) addFigure(figures, id);
+    assert.equal(new Set(figures.map((f) => f.color)).size, MAX_FIGURES);
+    assert.deepEqual(figures.map((f) => f.color), FIGURE_COLORS);
+    for (let i = 0; i < figures.length; i++) {
+      for (let j = i + 1; j < figures.length; j++) {
+        const a = figures[i].position;
+        const b = figures[j].position;
+        assert.ok(Math.hypot(a.x - b.x, a.z - b.z) >= SPOT_RADIUS, `figures ${i + 1} and ${j + 1} share a spot`);
+      }
+    }
+    assert.deepEqual(figures[4].position, { x: 3.6, y: 0, z: 0 });
+    assert.ok(Math.abs(figures[5].position.z + 1.1) < 1e-9);
+    assert.equal(figures[5].position.x, 0);
+  });
+
+  it("reuses a deleted figure's color and spot", () => {
+    const figures = [makeFigure(1)];
+    for (let id = 2; id <= 6; id++) addFigure(figures, id);
+    const gone = figures.splice(2, 1)[0];
+    const fresh = addFigure(figures, 7);
+    assert.equal(fresh.color, gone.color);
+    assert.deepEqual(fresh.position, gone.position);
+  });
+
+  it("treats a figure within half a meter as occupying a spot", () => {
+    const fig = makeFigure(1);
+    fig.position = { x: 0.3, y: 0, z: 0.2 };
+    assert.deepEqual(nextFreeSpot([fig]), { x: 0.9, y: 0, z: 0 });
+    fig.position = { x: 0.6, y: 0, z: 0 };
+    assert.deepEqual(nextFreeSpot([fig]), { x: 0, y: 0, z: 0 });
+  });
+
+  it("keeps the next id above every id in the scene", () => {
+    assert.equal(nextFigureId([{ id: "f1" }, { id: "f7" }, { id: "f3" }], 2), 8);
+    assert.equal(nextFigureId([{ id: "f1" }], 12), 12);
+    assert.equal(nextFigureId([{ id: "custom" }], 1), 1);
+  });
+
+  it("falls back to the first figure when the saved selection is gone", () => {
+    const figures = [{ id: "f2" }, { id: "f5" }];
+    assert.deepEqual(validSelection({ figureId: "f9", bone: "head" }, figures), { figureId: "f2", bone: null });
+    assert.equal(validSelection({ figureId: "f5", bone: "head" }, figures).figureId, "f5");
+    assert.deepEqual(validSelection(undefined, []), { figureId: null, bone: null });
+  });
+});
+
+describe("solo, lock and shortcuts", () => {
+  it("solo keeps only the chosen figure visible and detects the solo state", () => {
+    const figures = [makeFigure(1), makeFigure(2), makeFigure(3)];
+    assert.deepEqual(soloVisibility(figures, "f2"), [false, true, false]);
+    assert.equal(isSoloed(figures, "f2"), false);
+    figures.forEach((f, i) => {
+      f.visible = soloVisibility(figures, "f2")[i];
+    });
+    assert.equal(isSoloed(figures, "f2"), true);
+    assert.equal(isSoloed(figures, "f1"), false);
+    assert.equal(isSoloed([makeFigure(1)], "f1"), false);
+  });
+
+  it("does not let the viewport pick hidden or locked figures", () => {
+    const fig = makeFigure(1);
+    assert.equal(isPickable(fig), true);
+    fig.locked = true;
+    assert.equal(isPickable(fig), false);
+    fig.locked = false;
+    fig.visible = false;
+    assert.equal(isPickable(fig), false);
+  });
+
+  it("loads a figure saved before lock existed as unlocked and keeps its visibility", () => {
+    const old = clone(makeFigure(1)) as Partial<ReturnType<typeof makeFigure>>;
+    delete old.locked;
+    old.visible = false;
+    const fig = normalizeFigure(old as ReturnType<typeof makeFigure>);
+    assert.equal(fig.locked, false);
+    assert.equal(fig.visible, false);
+    assert.equal(normalizeFigure({ ...makeFigure(2), locked: true }).locked, true);
+  });
+
+  it("exports all on Shift+E in orbit mode only", () => {
+    const k = (key: string, shiftKey: boolean, extra: Partial<{ ctrlKey: boolean; metaKey: boolean; altKey: boolean }> = {}) => ({
+      key,
+      shiftKey,
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      ...extra,
+    });
+    assert.equal(isExportAllKey(k("E", true), "orbit"), true);
+    assert.equal(isExportAllKey(k("e", false), "orbit"), false);
+    assert.equal(isExportAllKey(k("E", true), "fly"), false);
+    assert.equal(isExportAllKey(k("E", true, { ctrlKey: true }), "orbit"), false);
+  });
+});
+
+describe("MiniMax H3 Image", () => {
+  const pt = (x: number, y = 100, behind = false) => ({ x, y, behind });
+
+  it("names every palette color in palette order", () => {
+    assert.deepEqual(FIGURE_COLOR_NAMES, [
+      "teal",
+      "amber",
+      "coral",
+      "sky blue",
+      "purple",
+      "lime green",
+      "pink",
+      "royal blue",
+      "yellow",
+      "brown",
+    ]);
+    assert.equal(colorName("#3ECFB2"), "teal");
+    assert.equal(colorName("#8a5a3c"), "brown");
+    assert.equal(colorName("#123456"), null);
+  });
+
+  it("tints clay by figure color unless turned off", () => {
+    assert.equal(defaultExport().clayTint, true);
+  });
+
+  it("offers the H3 presets on the 32 px grid", () => {
+    const want = ["2048x2048", "1536x2048", "2048x1536", "1152x2048", "2048x1152", "3136x1344"];
+    const h3 = RESOLUTIONS.filter((r) => r.group).map((r) => `${r.width}x${r.height}`);
+    assert.deepEqual(h3, want);
+    for (const r of RESOLUTIONS.filter((x) => x.group)) {
+      assert.equal(r.width % 32, 0);
+      assert.equal(r.height % 32, 0);
+      assert.deepEqual(snapResolution(r.width, r.height), { width: r.width, height: r.height, snapped: false, warn64: false });
+    }
+    assert.ok(RESOLUTIONS.some((r) => r.id === "768" && !r.group), "existing presets stay");
+  });
+
+  it("writes English ordinals", () => {
+    assert.deepEqual([1, 2, 3, 4, 10, 11, 12, 13, 21, 22, 23].map(ordinal), [
+      "1st",
+      "2nd",
+      "3rd",
+      "4th",
+      "10th",
+      "11th",
+      "12th",
+      "13th",
+      "21st",
+      "22nd",
+      "23rd",
+    ]);
+  });
+
+  it("orders figures left to right by where they appear in the frame", () => {
+    const order = orderLeftToRight(
+      [
+        { item: "right", points: [pt(600), pt(640)] },
+        { item: "left", points: [pt(50), pt(90)] },
+        { item: "middle", points: [pt(300), pt(340)] },
+      ],
+      768,
+      768,
+    );
+    assert.deepEqual(order, ["left", "middle", "right"]);
+  });
+
+  it("uses only the in-frame part of a figure and drops figures not in the picture", () => {
+    const order = orderLeftToRight(
+      [
+        // Mostly off the left edge; the visible part sits at x 20.
+        { item: "edge", points: [pt(-900), pt(-800), pt(20)] },
+        { item: "inside", points: [pt(10), pt(30)] },
+        { item: "behind", points: [pt(100, 100, true)] },
+        { item: "outside", points: [pt(2000), pt(-5, 900)] },
+      ],
+      768,
+      768,
+    );
+    assert.deepEqual(order, ["edge", "inside"]);
+    assert.deepEqual(orderLeftToRight([{ item: "a", points: [pt(5)] }, { item: "b", points: [pt(5)] }], 10, 200), ["a", "b"]);
+  });
+
+  it("suggests the largest 32-grid size within 16,777,216 pixels that keeps the aspect", () => {
+    assert.deepEqual(suggestH3Size(768, 768), { width: 4096, height: 4096 });
+    assert.deepEqual(suggestH3Size(2048, 2048), { width: 4096, height: 4096 });
+    // The ComfyUI table lists 3552 × 4736 for 3:4, but that is 16,822,272 pixels, over the cap.
+    assert.deepEqual(suggestH3Size(1536, 2048), { width: 3520, height: 4704 });
+    assert.deepEqual(suggestH3Size(2048, 1536), { width: 4704, height: 3520 });
+    for (const [w, h] of [
+      [3136, 1344],
+      [1152, 2048],
+      [832, 1216],
+      [512, 768],
+      [1000, 333],
+    ]) {
+      const s = suggestH3Size(w, h);
+      assert.equal(s.width % 32, 0);
+      assert.equal(s.height % 32, 0);
+      assert.ok(s.width * s.height <= H3_MAX_AREA, `${w}x${h} -> ${s.width}x${s.height}`);
+      // Within half a grid step of the true aspect on the short edge.
+      const err = Math.abs(s.width / s.height - w / h) / (w / h);
+      assert.ok(err <= 16 / Math.min(s.width, s.height) + 1e-9, `${w}x${h} -> ${s.width}x${s.height} err ${err}`);
+      // Nothing larger on the grid keeps the aspect at least as well.
+      for (let ww = s.width; ww <= s.width + 256; ww += 32) {
+        const hh = Math.round(ww / (w / h) / 32) * 32;
+        if (ww * hh > s.width * s.height) assert.ok(ww * hh > H3_MAX_AREA, `${ww}x${hh} also fits`);
+      }
+    }
+    assert.deepEqual(suggestH3Size(3136, 1344), { width: 6240, height: 2688 });
+  });
+
+  it("builds the prompt with one line per figure and the suggested size", () => {
+    const text = buildH3Prompt([{ color: "teal" }, { color: "amber" }], { width: 4096, height: 4096 });
+    assert.deepEqual(text.split("\n"), [
+      H3_PROMPT.intro,
+      "The teal figure (1st from the left) is the person in <Picture 2>.",
+      "The amber figure (2nd from the left) is the person in <Picture 3>.",
+      "Suggested output size: 4096 × 4096",
+    ]);
+  });
+
+  it("leaves the color word out when tint is off", () => {
+    const text = buildH3Prompt([{ color: null }, { color: null }, { color: null }], { width: 4736, height: 3552 });
+    const lines = text.split("\n");
+    assert.equal(lines[1], "The figure (1st from the left) is the person in <Picture 2>.");
+    assert.equal(lines[3], "The figure (3rd from the left) is the person in <Picture 4>.");
+    assert.equal(lines[4], "Suggested output size: 4736 × 3552");
   });
 });

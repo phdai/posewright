@@ -1,6 +1,10 @@
-/** Export resolutions. SD1.5 likes 512–768; SDXL likes ~1 megapixel buckets. All presets are multiples of 64. */
+/**
+ * Export resolutions. SD1.5 likes 512–768; SDXL likes ~1 megapixel buckets. The H3 group sizes
+ * a reference image for MiniMax-H3-Image, whose short edge ComfyUI rescales to 1024–2048 px.
+ * All presets are multiples of 64.
+ */
 
-export const RESOLUTIONS: { id: string; width: number; height: number; label: string }[] = [
+export const RESOLUTIONS: { id: string; width: number; height: number; label: string; group?: string }[] = [
   { id: "512", width: 512, height: 512, label: "512 × 512" },
   { id: "512x768", width: 512, height: 768, label: "512 × 768" },
   { id: "768x512", width: 768, height: 512, label: "768 × 512" },
@@ -11,6 +15,12 @@ export const RESOLUTIONS: { id: string; width: number; height: number; label: st
   { id: "896x1152", width: 896, height: 1152, label: "896 × 1152" },
   { id: "1152x896", width: 1152, height: 896, label: "1152 × 896" },
   { id: "1024x1536", width: 1024, height: 1536, label: "1024 × 1536" },
+  { id: "h3-2048", width: 2048, height: 2048, label: "2048 × 2048 (H3)", group: "MiniMax H3 Image" },
+  { id: "h3-1536x2048", width: 1536, height: 2048, label: "1536 × 2048 (H3)", group: "MiniMax H3 Image" },
+  { id: "h3-2048x1536", width: 2048, height: 1536, label: "2048 × 1536 (H3)", group: "MiniMax H3 Image" },
+  { id: "h3-1152x2048", width: 1152, height: 2048, label: "1152 × 2048 (H3)", group: "MiniMax H3 Image" },
+  { id: "h3-2048x1152", width: 2048, height: 1152, label: "2048 × 1152 (H3)", group: "MiniMax H3 Image" },
+  { id: "h3-3136x1344", width: 3136, height: 1344, label: "3136 × 1344 (H3)", group: "MiniMax H3 Image" },
   { id: "custom", width: 768, height: 768, label: "Custom" },
 ];
 

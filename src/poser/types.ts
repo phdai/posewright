@@ -47,6 +47,8 @@ export type FigureData = {
   name: string;
   color: string;
   visible: boolean;
+  /** Locked figures cannot be picked or moved in the viewport. Panels still edit them. */
+  locked: boolean;
   params: BodyParams;
   /** Ground-plane transform. Y lifts the figure off the floor. */
   position: Vec3;
@@ -86,6 +88,8 @@ export type ExportSettings = {
   wireAA: boolean;
   depthAuto: boolean;
   overlay: "off" | "skeleton" | "align";
+  /** Clay export: give each body its figure color. Off renders every body the same grey. */
+  clayTint: boolean;
 };
 
 export type SceneState = {

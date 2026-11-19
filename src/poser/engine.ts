@@ -10,9 +10,11 @@ import {
   MeshStandardMaterial,
   PCFShadowMap,
   PerspectiveCamera,
+  PlaneGeometry,
   Raycaster,
   Scene,
   SRGBColorSpace,
+  ShadowMaterial,
   Vector2,
   Vector3,
   Matrix4,
@@ -29,14 +31,26 @@ import { mirrorPose, poseById, writeHand, writeToes, composedEuler, clampEuler, 
 import { canvasToRgb, linearRgbToSrgb, pngBlob, rgbaToRgb } from "./png.ts";
 import { animaOutline } from "./outline.ts";
 import { exportCameraFit, snapResolution } from "./resolution.ts";
+import { buildH3Prompt, orderLeftToRight, suggestH3Size } from "./h3.ts";
+import { projectToPixel } from "./project.ts";
 import { clampParams, headLength } from "./proportions.ts";
 import {
   BODY_PRESETS,
+  MAX_FIGURES,
   clone,
+  colorName,
   defaultScene,
   downloadBlob,
+  isExportAllKey,
+  isPickable,
   makeFigure,
+  normalizeFigure,
+  nextFigureId,
+  nextFreeColor,
+  nextFreeSpot,
+  soloVisibility,
   stamp,
+  validSelection,
 } from "./state.ts";
 import type { BodyParams, CameraMode, FaceShape, FigureData, GizmoTool, HandPreset, SceneState, ToePreset, Vec3 } from "./types.ts";
 import { zipBlob, type ZipItem } from "./zip.ts";
@@ -48,7 +62,21 @@ function pngColor(hex: string): Color {
   return new Color().setRGB(srgb.r, srgb.g, srgb.b, LinearSRGBColorSpace);
 }
 
-type ExportKind = "openpose" | "wire" | "depth" | "normal" | "mask" | "openpose-figure" | "mask-figure" | "model" | "model-outline";
+type ExportKind =
+  | "openpose"
+  | "wire"
+  | "depth"
+  | "normal"
+  | "mask"
+  | "openpose-figure"
+  | "mask-figure"
+  | "model"
+  | "model-outline"
+  | "clay";
+
+/** Clay export look: plain light-grey backdrop, neutral body grey when tint is off. sRGB hex. */
+const CLAY_BACKGROUND = "#d6d6d6";
+const CLAY_NEUTRAL = "#9c9c9c";
 
 const IK_BONE: Record<string, string> = {
   "hand.L": "handL",
@@ -121,6 +149,10 @@ export class PoserEngine {
   private gizmo: TransformControls;
   private grid: GridHelper;
   private ground: Mesh;
+  /** Shadow catcher for the Clay export. Hidden in every other pass. */
+  private clayGround: Mesh;
+  private hemi: HemisphereLight;
+  private sun: DirectionalLight;
   private helpers: Object3D[] = [];
   private raycaster = new Raycaster();
   private pointer = new Vector2();
@@ -130,6 +162,7 @@ export class PoserEngine {
   private overlay: HTMLCanvasElement;
   private crop: HTMLDivElement;
   private hint: HTMLDivElement;
+  private resizeObserver: ResizeObserver;
   private undoStack: string[] = [];
   private redoStack: string[] = [];
   private raf = 0;
@@ -144,9 +177,12 @@ export class PoserEngine {
     normal?: HTMLCanvasElement;
     mask?: HTMLCanvasElement;
     model?: HTMLCanvasElement;
+    clay?: HTMLCanvasElement;
     align?: HTMLCanvasElement;
   } = {};
   private previewTimer = 0;
+  /** When false the preview strip keeps its last frame. Downloads and Export all never read it. */
+  private livePreviews = readLivePreviews();
   private previewRunning = false;
   private previewQueued = false;
   private disposed = false;
@@ -205,6 +241,8 @@ export class PoserEngine {
     sun.shadow.camera.top = 6;
     sun.shadow.camera.bottom = -6;
     this.scene.add(hemi, sun);
+    this.hemi = hemi;
+    this.sun = sun;
 
     this.ground = new Mesh(
       new CircleGeometry(16, 64),
@@ -217,6 +255,11 @@ export class PoserEngine {
     this.grid.position.y = 0.001;
     this.scene.add(this.grid);
     this.helpers.push(this.ground, this.grid);
+    this.clayGround = new Mesh(new PlaneGeometry(60, 60), new ShadowMaterial({ color: "#000000", opacity: 0.3 }));
+    this.clayGround.rotation.x = -Math.PI / 2;
+    this.clayGround.receiveShadow = true;
+    this.clayGround.visible = false;
+    this.scene.add(this.clayGround);
 
     this.orbit = new OrbitControls(this.camera, this.renderer.domElement);
     this.orbit.target.set(0, 0.95, 0);
@@ -257,8 +300,8 @@ export class PoserEngine {
     window.addEventListener("keyup", this.onKeyUp);
     document.addEventListener("pointerlockchange", this.onLock);
     window.addEventListener("blur", this.clearKeys);
-    const ro = new ResizeObserver(() => this.resize());
-    ro.observe(host);
+    this.resizeObserver = new ResizeObserver(() => this.resize());
+    this.resizeObserver.observe(host);
     this.resize();
     this.syncGizmo();
     this.tick = this.tick.bind(this);
@@ -337,7 +380,7 @@ export class PoserEngine {
     }
     for (const stale of live.values()) stale.dispose();
     this.views = next;
-    this.nextId = Math.max(this.nextId, ...this.state.figures.map((f) => Number(f.id.slice(1)) || 0)) + 1;
+    this.nextId = nextFigureId(this.state.figures, this.nextId);
     this.touch();
   }
 
@@ -355,10 +398,11 @@ export class PoserEngine {
   }
 
   addFigure(presetId = "adult-f") {
-    if (this.state.figures.length >= 4) return;
+    if (this.state.figures.length >= MAX_FIGURES) return;
     this.pushHistory();
     const fig = makeFigure(this.nextId++, presetId);
-    fig.position.x = this.state.figures.length * 0.9;
+    fig.color = nextFreeColor(this.state.figures);
+    fig.position = nextFreeSpot(this.state.figures);
     this.state.figures.push(fig);
     this.state.selection = { figureId: fig.id, bone: null };
     this.attachView(fig, true);
@@ -382,13 +426,13 @@ export class PoserEngine {
 
   duplicateSelected() {
     const src = this.selected();
-    if (!src || this.state.figures.length >= 4) return;
+    if (!src || this.state.figures.length >= MAX_FIGURES) return;
     this.pushHistory();
     const fig = clone(src.data);
     fig.id = `f${this.nextId++}`;
     fig.name = `${src.data.name} copy`;
     fig.position = { ...src.data.position, x: src.data.position.x + 0.55 };
-    fig.color = ["#3ecfb2", "#e0a045", "#d4654f", "#7aa2d4"][this.state.figures.length % 4];
+    fig.color = nextFreeColor(this.state.figures);
     this.state.figures.push(fig);
     this.state.selection = { figureId: fig.id, bone: null };
     this.attachView(fig, false);
@@ -413,6 +457,37 @@ export class PoserEngine {
     this.pushHistory();
     fig.visible = visible;
     this.emit();
+  }
+
+  /** Show this figure and hide the rest. Uses the visible flag, so one undo brings the others back. */
+  soloFigure(id: string) {
+    if (!this.state.figures.some((f) => f.id === id)) return;
+    const next = soloVisibility(this.state.figures, id);
+    if (this.state.figures.every((f, i) => f.visible === next[i])) return;
+    this.pushHistory();
+    this.state.figures.forEach((f, i) => {
+      f.visible = next[i];
+    });
+    this.touch();
+  }
+
+  showAll() {
+    if (this.state.figures.every((f) => f.visible)) return;
+    this.pushHistory();
+    for (const f of this.state.figures) f.visible = true;
+    this.touch();
+  }
+
+  setLocked(id: string, locked: boolean) {
+    const fig = this.state.figures.find((f) => f.id === id);
+    if (!fig || fig.locked === locked) return;
+    this.pushHistory();
+    fig.locked = locked;
+    if (locked) {
+      this.hoverBone = null;
+      this.hoverFace = null;
+    }
+    this.touch();
   }
 
   setParams(id: string, patch: Partial<BodyParams>) {
@@ -483,11 +558,7 @@ export class PoserEngine {
   }
 
   private normalizeFigure(fig: FigureData) {
-    fig.detailedFeet = fig.detailedFeet === true;
-    fig.detailedHead = fig.detailedHead === true;
-    fig.face = clampFace(fig.face);
-    fig.faceOffsets = clampFaceOffsets(fig.faceOffsets);
-    if (typeof fig.faceMirror !== "boolean") fig.faceMirror = true;
+    normalizeFigure(fig);
   }
 
   /**
@@ -867,6 +938,7 @@ export class PoserEngine {
     else this.scene.background = new Color("#14181d");
     for (const helper of this.helpers) helper.visible = true;
     this.grid.visible = this.state.showGrid;
+    this.clayGround.visible = false;
     this.gizmo.getHelper().visible = true;
     for (const view of this.views) {
       const selected = view.data.id === this.state.selection.figureId;
@@ -943,7 +1015,7 @@ export class PoserEngine {
     }
     this.pointerFrom(e);
     this.raycaster.setFromCamera(this.pointer, this.camera);
-    const markers = this.views.flatMap((v) => (v.data.visible ? [...v.markers.values()] : []));
+    const markers = this.views.flatMap((v) => (isPickable(v.data) ? [...v.markers.values()] : []));
     const hit = this.raycaster.intersectObjects(markers, false)[0];
     this.hoverBone = hit ? (hit.object.userData.bone as string) : null;
     this.hoverFace = this.faceEdit ? this.pickFacePoint(e) : null;
@@ -975,7 +1047,7 @@ export class PoserEngine {
     this.pointerFrom(e);
     this.raycaster.setFromCamera(this.pointer, this.camera);
     const pickable = this.state.showJoints || !this.state.showBody;
-    const markers = this.views.flatMap((v) => (v.data.visible && pickable ? [...v.markers.values()] : []));
+    const markers = this.views.flatMap((v) => (isPickable(v.data) && pickable ? [...v.markers.values()] : []));
     const hit = this.raycaster.intersectObjects(markers, false)[0];
     if (hit) {
       this.state.selection = {
@@ -986,7 +1058,7 @@ export class PoserEngine {
       this.touch();
       return;
     }
-    const meshes = this.views.filter((v) => v.data.visible).map((v) => v.mesh);
+    const meshes = this.views.filter((v) => isPickable(v.data)).map((v) => v.mesh);
     const body = this.raycaster.intersectObjects(meshes, false)[0];
     if (body) {
       const view = this.views.find((v) => v.mesh === body.object);
@@ -1007,7 +1079,7 @@ export class PoserEngine {
   /** Nearest landmark under the cursor, in the selected figure only. */
   private pickFacePoint(e: PointerEvent): number | null {
     const view = this.selected();
-    if (!view || !view.facePoints.visible) return null;
+    if (!view || !view.facePoints.visible || view.data.locked) return null;
     const rect = this.renderer.domElement.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
@@ -1147,15 +1219,20 @@ export class PoserEngine {
     }
     if (!e.ctrlKey && !e.metaKey) {
       const nudge = nudgeFromCode(e.code);
+      const lockedSel = this.selected()?.data.locked === true;
       if (nudge && this.faceEdit) {
         const point = this.state.selection.facePoint;
-        if (point != null) {
+        if (point != null && !lockedSel) {
           e.preventDefault();
           if (!e.repeat) this.pushHistory();
           this.nudgeFacePoint(point, e.code, e.shiftKey, e.altKey);
         } else {
           e.preventDefault();
         }
+        return;
+      }
+      if (nudge && !e.altKey && this.state.selection.bone && lockedSel) {
+        e.preventDefault();
         return;
       }
       if (nudge && !e.altKey && this.state.selection.bone) {
@@ -1166,12 +1243,16 @@ export class PoserEngine {
         return;
       }
     }
+    if (isExportAllKey(e, this.mode)) {
+      e.preventDefault();
+      void this.exportAll();
+      return;
+    }
     if (this.mode === "fly" && (key === "e" || key === "q")) return;
     if (key === "g") this.setTool("translate");
     else if (key === "r") this.setTool("rotate");
     else if (key === "f") this.frameSelected();
     else if (key === "c") this.setCameraMode(this.mode === "orbit" ? "fly" : "orbit");
-    else if (key === "e") void this.exportAll();
   };
 
   private onKeyUp = (e: KeyboardEvent) => {
@@ -1195,7 +1276,7 @@ export class PoserEngine {
     }
     const view = this.selected();
     this.gizmo.enabled = this.mode === "orbit";
-    if (!view || this.mode === "fly") {
+    if (!view || this.mode === "fly" || view.data.locked) {
       this.gizmo.detach();
       return;
     }
@@ -1425,6 +1506,7 @@ export class PoserEngine {
       });
     }
     if (kind === "model" || kind === "model-outline") return this.modelBlob(width, height, kind === "model-outline");
+    if (kind === "clay") return pngBlob(width, height, await this.clayRgb(width, height));
     throw new Error(`unknown export ${kind}`);
   }
 
@@ -1594,6 +1676,149 @@ export class PoserEngine {
     }
   }
 
+  /**
+   * Matte clay bodies with soft shading and a ground shadow on light grey, for
+   * MiniMax-H3-Image edit mode. Same camera and crop as every other export. The
+   * clay material writes display (sRGB) bytes itself, see createClayMaterial.
+   */
+  private async clayRgb(width: number, height: number): Promise<Uint8Array> {
+    const cam = this.exportCamera(width, height);
+    const target = new WebGLRenderTarget(width, height, { depthBuffer: true, samples: 4 });
+    target.texture.colorSpace = LinearSRGBColorSpace;
+    const prevBg = this.scene.background;
+    const prevShadow = this.exporter.shadowMap.enabled;
+    const prevShadowType = this.exporter.shadowMap.type;
+    const prevHemi = { sky: this.hemi.color.clone(), ground: this.hemi.groundColor.clone(), intensity: this.hemi.intensity };
+    const prevSun = {
+      intensity: this.sun.intensity,
+      radius: this.sun.shadow.radius,
+      bias: this.sun.shadow.bias,
+      normalBias: this.sun.shadow.normalBias,
+      position: this.sun.position.clone(),
+      target: this.sun.target.position.clone(),
+    };
+    const tint = this.state.export.clayTint !== false;
+    // The live view keeps rendering while the readback is awaited. Put the lights and the
+    // shadow catcher back as soon as the frame is drawn so the viewport never sees them.
+    const restoreLights = () => {
+      this.hemi.color.copy(prevHemi.sky);
+      this.hemi.groundColor.copy(prevHemi.ground);
+      this.hemi.intensity = prevHemi.intensity;
+      this.sun.intensity = prevSun.intensity;
+      this.sun.shadow.radius = prevSun.radius;
+      this.sun.shadow.bias = prevSun.bias;
+      this.sun.shadow.normalBias = prevSun.normalBias;
+      this.sun.position.copy(prevSun.position);
+      this.sun.target.position.copy(prevSun.target);
+      this.sun.updateMatrixWorld();
+      this.sun.target.updateMatrixWorld();
+      this.clayGround.visible = false;
+    };
+    try {
+      this.scene.background = pngColor(CLAY_BACKGROUND);
+      for (const h of this.helpers) h.visible = false;
+      for (const v of this.views) {
+        for (const m of v.markers.values()) m.visible = false;
+        v.setFaceGuide(false);
+        v.setViewportBody(true);
+        v.clay.color.set(tint ? v.data.color : CLAY_NEUTRAL);
+        v.mesh.material = v.clay;
+        v.mesh.visible = v.data.visible;
+      }
+      this.gizmo.getHelper().visible = false;
+      this.clayGround.visible = true;
+      // Soft studio light that follows the export camera, so the faces the camera sees are lit
+      // from any orbit angle: a bright sky fill plus a key from above and to the camera's left
+      // that throws a blurred shadow behind the figures.
+      const center = this.figureCenter(cam);
+      const toCam = cam.position.clone().sub(center);
+      toCam.y = 0;
+      if (toCam.lengthSq() < 1e-6) toCam.set(0, 0, 1);
+      toCam.normalize();
+      const left = new Vector3().crossVectors(new Vector3(0, 1, 0), toCam).normalize();
+      const keyDir = toCam.multiplyScalar(0.9).addScaledVector(left, 0.6).add(new Vector3(0, 1.4, 0)).normalize();
+      this.sun.position.copy(center).addScaledVector(keyDir, 8);
+      this.sun.target.position.copy(center);
+      this.sun.updateMatrixWorld();
+      this.sun.target.updateMatrixWorld();
+      this.hemi.color.set("#ffffff");
+      this.hemi.groundColor.set("#b4b1ab");
+      this.hemi.intensity = 2.3;
+      this.sun.intensity = 2.6;
+      this.sun.shadow.radius = 6;
+      // Keeps the blurred shadow from striping the bodies (shadow acne).
+      this.sun.shadow.bias = -0.0004;
+      this.sun.shadow.normalBias = 0.015;
+      this.exporter.shadowMap.enabled = true;
+      this.exporter.shadowMap.type = PCFShadowMap;
+      this.exporter.setSize(width, height, false);
+      this.exporter.setRenderTarget(target);
+      this.exporter.setClearColor(pngColor(CLAY_BACKGROUND), 1);
+      this.exporter.clear(true, true, true);
+      this.exporter.render(this.scene, cam);
+      restoreLights();
+      const buf = new Uint8Array(width * height * 4);
+      await this.exporter.readRenderTargetPixelsAsync(target, 0, 0, width, height, buf);
+      return rgbaToRgb(buf, width, height, true);
+    } finally {
+      restoreLights();
+      this.exporter.setRenderTarget(null);
+      target.dispose();
+      this.exporter.shadowMap.enabled = prevShadow;
+      this.exporter.shadowMap.type = prevShadowType;
+      this.scene.background = prevBg;
+      for (const h of this.helpers) h.visible = true;
+      this.grid.visible = this.state.showGrid;
+      this.gizmo.getHelper().visible = true;
+      for (const v of this.views) {
+        v.mesh.material = v.beauty;
+        v.setViewportBody(this.state.showBody);
+      }
+    }
+  }
+
+  /** Middle of the visible figures' joints on the ground plane, or the point the camera looks at. */
+  private figureCenter(cam: PerspectiveCamera): Vector3 {
+    const sum = new Vector3();
+    const p = new Vector3();
+    let n = 0;
+    for (const v of this.views) {
+      if (!v.data.visible) continue;
+      for (const bone of v.bones.values()) {
+        sum.add(bone.getWorldPosition(p));
+        n += 1;
+      }
+    }
+    if (n > 0) return sum.multiplyScalar(1 / n).setY(0);
+    const dir = new Vector3();
+    cam.getWorldDirection(dir);
+    return cam.position.clone().addScaledVector(dir, 3).setY(0);
+  }
+
+  /**
+   * Prompt for H3 edit mode: visible figures in the export frame, left to right,
+   * mapped to <Picture 2>, <Picture 3>, … The color word is left out when tint is off.
+   */
+  h3Prompt(): { text: string; count: number } {
+    const { width, height } = this.state.export;
+    const cam = this.exportCamera(width, height);
+    const p = new Vector3();
+    const projected = this.views
+      .filter((v) => v.data.visible)
+      .map((v) => {
+        v.group.updateMatrixWorld(true);
+        const points = [...v.bones.values()].map((bone) => projectToPixel(bone.getWorldPosition(p), cam, width, height));
+        return { item: v.data, points };
+      });
+    const ordered = orderLeftToRight(projected, width, height);
+    const tint = this.state.export.clayTint !== false;
+    const text = buildH3Prompt(
+      ordered.map((fig) => ({ color: tint ? colorName(fig.color) : null })),
+      suggestH3Size(width, height),
+    );
+    return { text, count: ordered.length };
+  }
+
   private async modelBlob(width: number, height: number, outline: boolean): Promise<Blob> {
     const color = await this.shadedRgb(width, height);
     if (!outline) return pngBlob(width, height, color);
@@ -1625,6 +1850,8 @@ export class PoserEngine {
     await push("model.png", await this.exportPng("model"));
     await push("model_outline.png", await this.exportPng("model-outline"));
     await push("openpose.json", await this.exportJson());
+    await push("clay.png", await this.exportPng("clay"));
+    items.push({ name: "h3_prompt.txt", data: new TextEncoder().encode(`${this.h3Prompt().text}\n`) });
     for (let i = 0; i < this.state.figures.length; i++) {
       if (!this.state.figures[i].visible) continue;
       const n = i + 1;
@@ -1663,8 +1890,8 @@ export class PoserEngine {
     this.pushHistory();
     for (const v of this.views) v.dispose();
     this.views = [];
-    this.state.figures = data.state.figures.slice(0, 4);
-    this.state.selection = data.state.selection ?? { figureId: this.state.figures[0]?.id ?? null, bone: null };
+    this.state.figures = data.state.figures.slice(0, MAX_FIGURES);
+    this.state.selection = validSelection(data.state.selection, this.state.figures);
     this.state.jointLimits = data.state.jointLimits ?? true;
     this.state.showJoints = data.state.showJoints ?? true;
     this.state.showBody = data.state.showBody ?? true;
@@ -1675,6 +1902,7 @@ export class PoserEngine {
       this.normalizeFigure(fig);
       this.attachView(fig, false);
     }
+    this.nextId = nextFigureId(this.state.figures, this.nextId);
     if (data.camera) this.applyCamera(data.camera);
     this.touch();
   }
@@ -1804,6 +2032,17 @@ export class PoserEngine {
     this.setCameraMode(cam.mode);
   }
 
+  getLivePreviews(): boolean {
+    return this.livePreviews;
+  }
+
+  setLivePreviews(on: boolean) {
+    if (this.livePreviews === on) return;
+    this.livePreviews = on;
+    writeLivePreviews(on);
+    this.emit();
+  }
+
   setPreviewCanvases(canvases: PoserEngine["preview"]) {
     this.preview = canvases;
     this.schedulePreview();
@@ -1834,12 +2073,17 @@ export class PoserEngine {
   }
 
   private async renderPreviewInner() {
-    const pose = this.preview.pose;
-    if (!pose) return;
     const aspect = this.state.export.width / this.state.export.height;
     const w = 256;
     const h = Math.max(64, Math.round(w / aspect / 8) * 8);
     const ww = Math.round(w / 8) * 8;
+    if (!this.livePreviews) {
+      // Keep the small-figure warning current without any GPU work.
+      this.updateWarning(this.people(this.exportCamera(ww, h), ww, h), h);
+      return;
+    }
+    const pose = this.preview.pose;
+    if (!pose) return;
     const drawInto = (el: HTMLCanvasElement | undefined, src: HTMLCanvasElement) => {
       if (!el) return;
       el.width = src.width;
@@ -1863,6 +2107,7 @@ export class PoserEngine {
     await paint(this.preview.normal, await this.smallNormal(ww, h));
     await paint(this.preview.mask, await this.smallMask(ww, h));
     await paint(this.preview.model, await this.modelBlob(ww, h, false));
+    if (this.preview.clay) await paint(this.preview.clay, pngBlob(ww, h, await this.clayRgb(ww, h)));
     if (this.preview.align) {
       const align = document.createElement("canvas");
       align.width = ww;
@@ -1926,6 +2171,7 @@ export class PoserEngine {
       setCameraMode: (mode: CameraMode) => engine.setCameraMode(mode),
       frameAll: () => engine.frameAll(),
       figureCount: () => engine.state.figures.length,
+      figures: () => clone(engine.state.figures),
     };
     window.__controlsTest = {
       getYaw: () => engine.fly.yaw,
@@ -1943,10 +2189,39 @@ export class PoserEngine {
     window.clearTimeout(this.previewTimer);
     window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("keyup", this.onKeyUp);
+    window.removeEventListener("blur", this.clearKeys);
+    document.removeEventListener("pointerlockchange", this.onLock);
+    this.resizeObserver.disconnect();
+    for (const v of this.views) v.dispose();
+    this.views = [];
+    // React mounts twice in dev. Leave nothing behind that could cover the live engine's canvas.
+    this.renderer.domElement.remove();
+    this.overlay.remove();
+    this.crop.remove();
+    this.hint.remove();
     this.renderer.dispose();
     this.exporter.dispose();
     this.orbit.dispose();
     this.gizmo.dispose();
+  }
+}
+
+const LIVE_PREVIEWS_KEY = "posewright.livePreviews";
+
+/** A per-browser preference, not part of the scene. Storage may be blocked, so fall back to on. */
+function readLivePreviews(): boolean {
+  try {
+    return window.localStorage.getItem(LIVE_PREVIEWS_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+function writeLivePreviews(on: boolean) {
+  try {
+    window.localStorage.setItem(LIVE_PREVIEWS_KEY, on ? "on" : "off");
+  } catch {
+    // Ignore: the toggle still works for this session.
   }
 }
 
@@ -1958,6 +2233,8 @@ declare global {
       setCameraMode: (mode: CameraMode) => void;
       frameAll: () => void;
       figureCount: () => number;
+      /** Read-only copy of the scene's figures, for browser checks. */
+      figures: () => FigureData[];
     };
     __controlsTest?: {
       getYaw: () => number;

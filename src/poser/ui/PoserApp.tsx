@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type MutableRefObject } from "react";
 import { PoserEngine } from "../engine.ts";
-import { BODY_PRESETS } from "../state.ts";
+import { BODY_PRESETS, MAX_FIGURES, isSoloed } from "../state.ts";
 import { POSE_PRESETS, jointGroup, jointLabel, jointNames, limitsFor } from "../pose.ts";
 import { FACE_GROUPS, FACE_PRESETS, faceGroupOf } from "../face.ts";
 import { RESOLUTIONS, snapResolution } from "../resolution.ts";
@@ -59,6 +59,8 @@ export function PoserApp() {
       depth: els.depth ?? undefined,
       normal: els.normal ?? undefined,
       mask: els.mask ?? undefined,
+      model: els.model ?? undefined,
+      clay: els.clay ?? undefined,
       align: els.align ?? undefined,
     });
   }, [engine, tab]);
@@ -80,11 +82,11 @@ export function PoserApp() {
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <aside className={`${panelClass(tab === "figure")} lg:flex lg:w-80 lg:flex-col lg:border-r`}>
           {engine && state && (
-            <FigurePanel engine={engine} figures={state.figures} selected={selected} atCap={state.figures.length >= 4} />
+            <FigurePanel engine={engine} figures={state.figures} selected={selected} atCap={state.figures.length >= MAX_FIGURES} />
           )}
         </aside>
         <div className={`${tab === "stage" || tab === "face" ? "flex" : "hidden"} relative min-h-[40vh] flex-1 flex-col lg:flex`}>
-          <div ref={hostRef} className="relative min-h-0 w-full flex-1" />
+          <div ref={hostRef} className="relative min-h-0 w-full flex-1 overflow-hidden" />
         </div>
         <aside className={`${tab === "pose" || tab === "face" || tab === "export" ? "flex" : "hidden"} min-h-0 flex-col lg:flex lg:w-96 lg:border-l`}>
           {engine && state && (
@@ -199,7 +201,7 @@ export function PoserApp() {
             ?
           </button>
           <span className="ml-auto hidden text-xs text-muted sm:inline">
-            {state.figures.length}/4 · {state.jointLimits ? "Limits on" : "Limits off"}
+            {state.figures.length}/{MAX_FIGURES} · {state.jointLimits ? "Limits on" : "Limits off"}
           </span>
         </footer>
       )}
@@ -235,27 +237,54 @@ function FigurePanel({
     <div className="scroll-thin flex min-h-0 flex-1 flex-col gap-3 overflow-auto p-3">
       <div className="flex items-center justify-between">
         <h1 className="text-sm font-semibold tracking-wide">Posewright</h1>
-        <button type="button" title={atCap ? "Four figures is the maximum" : "Add a figure"} className={btn()} disabled={atCap} onClick={() => engine.addFigure()}>
+        <button type="button" title={atCap ? `${MAX_FIGURES} figures is the maximum` : "Add a figure"} className={btn()} disabled={atCap} onClick={() => engine.addFigure()}>
           Add figure
         </button>
       </div>
-      <ul className="flex flex-col gap-1">
-        {figures.map((fig) => (
-          <li key={fig.id} className={`flex items-center gap-2 rounded-sm border px-2 py-1 ${fig.id === selected?.id ? "border-accent" : "border-line"}`}>
-            <button type="button" title={`Select ${fig.name}`} className="flex min-h-11 flex-1 items-center gap-2 text-left text-sm" onClick={() => engine.selectFigure(fig.id)}>
-              <span className="inline-block size-3 rounded-full" style={{ background: fig.color }} />
-              <span className="truncate">{fig.name}</span>
-            </button>
-            <button type="button" title={fig.visible ? "Hide figure" : "Show figure"} className={btn()} onClick={() => engine.setVisible(fig.id, !fig.visible)}>
-              {fig.visible ? "Hide" : "Show"}
-            </button>
-          </li>
-        ))}
+      <ul className="scroll-thin flex max-h-64 shrink-0 flex-col gap-1 overflow-auto">
+        {figures.map((fig) => {
+          const solo = isSoloed(figures, fig.id);
+          return (
+            <li key={fig.id} className={`flex shrink-0 items-center gap-1 rounded-sm border px-2 py-1 ${fig.id === selected?.id ? "border-accent" : "border-line"}`}>
+              <button type="button" title={`Select ${fig.name}`} className="flex min-h-11 min-w-0 flex-1 items-center gap-2 text-left text-sm" onClick={() => engine.selectFigure(fig.id)}>
+                <span className="inline-block size-3 shrink-0 rounded-full" style={{ background: fig.color }} />
+                <span className={`truncate ${fig.visible ? "" : "text-muted"}`}>{fig.name}</span>
+                {fig.locked && <span className="shrink-0 text-xs text-muted">locked</span>}
+              </button>
+              <button
+                type="button"
+                aria-pressed={solo}
+                title={solo ? "Show every figure again" : `Show only ${fig.name}. Undo brings the others back.`}
+                className={btn(solo)}
+                onClick={() => (solo ? engine.showAll() : engine.soloFigure(fig.id))}
+              >
+                Solo
+              </button>
+              <button
+                type="button"
+                aria-pressed={fig.locked}
+                title={fig.locked ? "Unlock: the viewport can pick and move this figure again" : "Lock: the viewport cannot pick or move this figure. The panels still edit it."}
+                className={btn(fig.locked)}
+                onClick={() => engine.setLocked(fig.id, !fig.locked)}
+              >
+                {fig.locked ? "Unlock" : "Lock"}
+              </button>
+              <button type="button" title={fig.visible ? "Hide figure" : "Show figure"} className={btn()} onClick={() => engine.setVisible(fig.id, !fig.visible)}>
+                {fig.visible ? "Hide" : "Show"}
+              </button>
+            </li>
+          );
+        })}
       </ul>
+      {figures.some((f) => !f.visible) && (
+        <button type="button" title="Make every figure visible" className={`${btn()} self-start`} onClick={() => engine.showAll()}>
+          Show all
+        </button>
+      )}
       {selected && (
         <>
           <div className="flex gap-2">
-            <button type="button" title="Duplicate this figure" className={btn()} disabled={atCap} onClick={() => engine.duplicateSelected()}>
+            <button type="button" title={atCap ? `${MAX_FIGURES} figures is the maximum` : "Duplicate this figure"} className={btn()} disabled={atCap} onClick={() => engine.duplicateSelected()}>
               Duplicate
             </button>
             <button type="button" title="Delete the selected figure (Del)" className={btn()} onClick={() => engine.deleteSelected()}>
@@ -644,10 +673,19 @@ function ExportPanel({
             engine.setExport({ preset: id, width: preset.width, height: preset.height });
           }}
         >
-          {RESOLUTIONS.map((r) => (
+          {RESOLUTIONS.filter((r) => !r.group).map((r) => (
             <option key={r.id} value={r.id}>
               {r.label}
             </option>
+          ))}
+          {[...new Set(RESOLUTIONS.flatMap((r) => (r.group ? [r.group] : [])))].map((group) => (
+            <optgroup key={group} label={group}>
+              {RESOLUTIONS.filter((r) => r.group === group).map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.label}
+                </option>
+              ))}
+            </optgroup>
           ))}
         </select>
       </label>
@@ -725,13 +763,26 @@ function ExportPanel({
         >
           3D outline
         </button>
+        <button
+          type="button"
+          title="Matte clay bodies with a soft ground shadow on light grey. Use it as <Picture 1> in MiniMax H3 Image edit mode."
+          className={btn()}
+          onClick={() => void engine.download("clay")}
+        >
+          Clay
+        </button>
         <button type="button" title="Download OpenPose JSON" className={btn()} onClick={() => void engine.downloadJson()}>
           JSON
         </button>
-        <button type="button" title="Zip every conditioning image (E in orbit mode)" className={btn(true)} onClick={() => void engine.exportAll()}>
+        <button type="button" title="Zip every conditioning image (Shift+E in orbit mode)" className={btn(true)} onClick={() => void engine.exportAll()}>
           Export all
         </button>
       </div>
+      <label className="flex min-h-11 items-center gap-2 text-sm" title="Clay export: give each body its figure color so a prompt can name it. Off renders every body the same grey.">
+        <input type="checkbox" checked={settings.clayTint} onChange={(e) => engine.setExport({ clayTint: e.target.checked })} />
+        Tint by figure color
+      </label>
+      <H3Prompt engine={engine} />
       <label className="flex min-h-11 items-center gap-2 text-sm" title="Black lines on white">
         <input type="checkbox" checked={settings.wireInvert} onChange={(e) => engine.setExport({ wireInvert: e.target.checked })} />
         Invert wire
@@ -763,7 +814,12 @@ function ExportPanel({
         <input type="checkbox" checked={settings.depthAuto} onChange={(e) => engine.setExport({ depthAuto: e.target.checked })} />
         Auto depth range
       </label>
-      <div className="grid grid-cols-3 gap-1">
+      <label className="flex min-h-11 items-center gap-2 text-sm" title="Re-render the small previews as you pose. Turn off on a slow machine. Downloads and Export all are not affected.">
+        <input type="checkbox" checked={engine.getLivePreviews()} onChange={(e) => engine.setLivePreviews(e.target.checked)} />
+        Live previews
+      </label>
+      {!engine.getLivePreviews() && <p className="text-xs text-muted">Previews are paused and show the last frame. Downloads still render the current scene.</p>}
+      <div className={`grid grid-cols-3 gap-1 ${engine.getLivePreviews() ? "" : "opacity-50"}`}>
         {(
           [
             ["pose", "Pose"],
@@ -773,6 +829,7 @@ function ExportPanel({
             ["normal", "Normal"],
             ["mask", "Mask"],
             ["model", "Model"],
+            ["clay", "Clay"],
           ] as const
         ).map(([id, label]) => (
           <figure key={id} className="overflow-hidden rounded-sm border border-line bg-bg">
@@ -788,6 +845,45 @@ function ExportPanel({
         ))}
       </div>
       <p className="text-xs text-muted">{count} figure{count === 1 ? "" : "s"} in the scene. The frame overlay matches the export crop.</p>
+    </div>
+  );
+}
+
+/** Copies the MiniMax H3 edit prompt and shows what was copied. */
+function H3Prompt({ engine }: { engine: PoserEngine }) {
+  const [shown, setShown] = useState<{ text: string; note: string } | null>(null);
+  const copy = async () => {
+    const { text, count } = engine.h3Prompt();
+    let note = `Copied. ${count} figure${count === 1 ? "" : "s"}, left to right.`;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      note = "The browser blocked the clipboard. Select the text below and copy it.";
+    }
+    setShown({ text, note });
+  };
+  return (
+    <div className="flex flex-col gap-1">
+      <button
+        type="button"
+        title="Copy a prompt for MiniMax H3 Image edit mode. Visible figures are listed left to right; the first is <Picture 2>."
+        className={`${btn()} self-start`}
+        onClick={() => void copy()}
+      >
+        Copy H3 prompt
+      </button>
+      {shown && (
+        <>
+          <p className="text-xs text-muted">{shown.note}</p>
+          <textarea
+            readOnly
+            aria-label="H3 prompt"
+            className="h-32 w-full resize-y rounded-sm border border-line bg-bg p-2 font-mono text-xs text-fg"
+            value={shown.text}
+            onFocus={(e) => e.currentTarget.select()}
+          />
+        </>
+      )}
     </div>
   );
 }
@@ -956,7 +1052,8 @@ function Help({ onClose }: { onClose: () => void }) {
     ["Scroll", "Zoom"],
     ["C", "Toggle orbit / fly"],
     ["WASD", "Fly move. A left, D right"],
-    ["Q / E", "Fly down / up (orbit: E exports)"],
+    ["Q / E", "Fly down / up"],
+    ["Shift+E", "Export all (orbit mode)"],
     ["Shift", "Fly faster"],
     ["G / R", "Move gizmo / rotate gizmo"],
     ["Arrows", "Nudge joint, or the selected face point"],

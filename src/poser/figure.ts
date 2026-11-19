@@ -94,6 +94,49 @@ void main() {
 }
 `;
 
+/**
+ * Khronos PBR Neutral tone mapping (the same curve as three's NeutralToneMapping).
+ * Three only links its tone-mapping functions into programs that render to the
+ * screen, so the clay shader carries its own copy. It keeps hues, so a yellow
+ * figure still reads as yellow after the highlights roll off.
+ */
+const CLAY_TONE_MAP = /* glsl */ `
+vec3 clayToneMap( vec3 color ) {
+  const float startCompression = 0.8 - 0.04;
+  const float desaturation = 0.15;
+  float x = min( color.r, min( color.g, color.b ) );
+  float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+  color -= offset;
+  float peak = max( color.r, max( color.g, color.b ) );
+  if ( peak < startCompression ) return color;
+  float d = 1.0 - startCompression;
+  float newPeak = 1.0 - d * d / ( peak + d - startCompression );
+  color *= newPeak / peak;
+  float g = 1.0 - 1.0 / ( desaturation * ( peak - newPeak ) + 1.0 );
+  return mix( color, vec3( newPeak ), g );
+}
+`;
+
+/**
+ * Matte clay for the H3 reference render. Export targets are linear and skip the
+ * renderer's tone mapping, so the shader applies neutral tone mapping and sRGB
+ * encoding itself. The 8-bit target then holds display bytes and the soft
+ * shading does not band.
+ */
+export function createClayMaterial(color: string): MeshStandardMaterial {
+  const mat = new MeshStandardMaterial({ color, roughness: 1, metalness: 0 });
+  mat.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader
+      .replace("void main() {", `${CLAY_TONE_MAP}\nvoid main() {`)
+      .replace(
+        "#include <colorspace_fragment>",
+        "gl_FragColor.rgb = clayToneMap( gl_FragColor.rgb );\ngl_FragColor = sRGBTransferOETF( gl_FragColor );",
+      );
+  };
+  mat.customProgramCacheKey = () => "posewright-clay";
+  return mat;
+}
+
 export function createDepthMaterial(): ShaderMaterial {
   return new ShaderMaterial({
     uniforms: { uNear: { value: 0.1 }, uFar: { value: 10 } },
@@ -120,6 +163,8 @@ export class FigureView {
   mesh: SkinnedMesh;
   readonly beauty: MeshStandardMaterial;
   readonly anima: MeshStandardMaterial;
+  /** Clay export. The engine sets its color per render (figure color or neutral grey). */
+  readonly clay: MeshStandardMaterial;
   readonly wire: ShaderMaterial;
   readonly mask: MeshBasicMaterial;
   readonly normal: MeshNormalMaterial;
@@ -157,6 +202,7 @@ export class FigureView {
       roughness: 0.36,
       metalness: 0.06,
     });
+    this.clay = createClayMaterial(data.color);
     this.wire = new ShaderMaterial({
       uniforms: {
         uColor: { value: new Color("#ffffff") },
@@ -669,6 +715,7 @@ export class FigureView {
     this.mesh.geometry.dispose();
     this.beauty.dispose();
     this.anima.dispose();
+    this.clay.dispose();
     this.wire.dispose();
     this.mask.dispose();
     this.normal.dispose();

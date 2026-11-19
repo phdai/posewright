@@ -1,6 +1,6 @@
 # Posewright
 
-A local 3D posing bench. Place up to four procedural human figures, pose them with forward or inverse kinematics, and export pixel-aligned ControlNet conditioning images for ComfyUI. Nothing is downloaded at runtime. The body mesh is generated in the browser.
+A local 3D posing bench. Place up to ten procedural human figures, pose them with forward or inverse kinematics, and export pixel-aligned ControlNet conditioning images for ComfyUI. Nothing is downloaded at runtime. The body mesh is generated in the browser.
 
 ## Run
 
@@ -12,7 +12,7 @@ npm run dev
 `npm run build` writes a static production bundle. Unit tests:
 
 ```bash
-npm test
+node --experimental-strip-types --test src/poser/logic.test.ts
 ```
 
 The pure-logic tests (proportions, projection, OpenPose JSON, PNG/ZIP, IK) live in `src/poser/logic.test.ts` and run under Node's test runner.
@@ -26,7 +26,8 @@ The pure-logic tests (proportions, projection, OpenPose JSON, PNG/ZIP, IK) live 
 | Scroll | Zoom |
 | C | Toggle orbit / fly |
 | WASD | Fly. **A strafes left, D strafes right** |
-| Q / E | Fly down / up. In orbit mode, E exports everything |
+| Q / E | Fly down / up |
+| Shift+E | Export all, in orbit mode. Plain E does nothing in orbit mode, so a stray keypress no longer starts an export |
 | Shift | Fly faster |
 | G / R | Move gizmo / rotate gizmo |
 | Arrow keys | Nudge the selected joint. Up/Down are X, Left/Right are Y. Shift is 5° |
@@ -50,6 +51,10 @@ The mesh is a `SkinnedMesh` of lofted tubes and ellipsoids, roughly a few thousa
 
 Changing a slider rebuilds the mesh and keeps the current joint rotations.
 
+Each figure gets the first palette color no other figure is using, so deleting a figure and adding another gives the new one the freed color. New figures stand in the first free spot of a grid of rows of five, 0.9 m apart, each row 1.1 m further back.
+
+In the figure list, **Solo** shows that figure and hides the others (press it again, or **Show all**, to bring them back; it is one undo step). **Lock** stops the viewport from picking, hovering or moving a figure, which helps when figures overlap. The panels still edit a locked figure. Scenes saved before these buttons existed load with every figure unlocked.
+
 ## Poses
 
 Rest is a T-pose. Joints are XYZ Euler degrees in that frame (see the comment at the top of `src/poser/pose.ts`). The pose panel lists joints in an accordion, one region open at a time; Tab still walks the full list and opens the group it lands in. Type a degree into X, Y, or Z, or nudge with the arrow keys (comma and period change Z). FK attaches a rotation gizmo to the selected joint. IK solves arms and legs with a two-bone law-of-cosines solver (elbows bend back, knees bend forward) and the spine/neck with FABRIK. Editing a joint that IK is driving turns IK off and keeps the pose, so the number you type stays. Joint limits are on by default; uncheck **Joint limits** in the pose panel for a full turn on every axis. Mirror copies one side onto the other.
@@ -72,9 +77,10 @@ Every PNG is 8-bit RGB, opaque, no alpha. Dimensions snap to a multiple of 8 (a 
 - **Normals** use the ControlNet camera-space convention, including the flat `(128, 128, 255)` background.
 - **Masks** are one white silhouette per figure plus a combined color mask.
 - **3D model** is a glossy shaded body on black, one material color per figure, for Anima's `anima_3dpose_6200` ControlNet-LLLite. **3D outline** is that same plate plus a complementary-color silhouette and overlap stroke (4 px at a 768 px short side) for `anima_3dpose_outline_7000`.
-- **Export all** writes a store-only zip: `openpose.png`, `wireframe.png`, `depth.png`, `normal.png`, `mask_combined.png`, `model.png`, `model_outline.png`, `mask_figureN.png`, `openpose_figureN.png`, `openpose.json`, `settings.json`. The zip name and single-file downloads include a timestamp. Per-figure files are only written for figures that exist.
+- **Clay** is every visible figure as a matte, untextured body with soft shading and a ground shadow on plain light grey, for MiniMax H3 Image (see below). **Tint by figure color** (on by default) gives each body its figure color; off makes every body the same neutral grey. The key light follows the export camera, so the side you see is always lit.
+- **Export all** writes a store-only zip: `openpose.png`, `wireframe.png`, `depth.png`, `normal.png`, `mask_combined.png`, `model.png`, `model_outline.png`, `mask_figureN.png`, `openpose_figureN.png`, `openpose.json`, `clay.png`, `h3_prompt.txt`, `settings.json`. The zip name and single-file downloads include a timestamp. Per-figure files are only written for figures that exist.
 
-The preview strip updates as you pose. **Align** draws the skeleton on top of the wireframe so you can check that they share pixels.
+The preview strip updates as you pose. Untick **Live previews** to stop it re-rendering on a slow machine; downloads and Export all always render the current scene. **Align** draws the skeleton on top of the wireframe so you can check that they share pixels.
 
 ## ComfyUI
 
@@ -98,6 +104,20 @@ For more than one character, export the per-figure masks and the per-figure Open
 3. For each character, a regional prompt masked by `mask_figureN.png`, optionally with `openpose_figureN.png` on a second OpenPose ControlNet so that character's pose stays locked while you change their prompt.
 
 If a figure is under about 18% of the frame height, the export panel warns you. ControlNet is much more reliable when the whole body is clearly in frame.
+
+## MiniMax H3 Image
+
+MiniMax-H3-Image has no ControlNet. Its edit mode takes up to 16 pictures, named `<Picture 1>`, `<Picture 2>`, … in upload order, and edits `<Picture 1>`. Posewright's route is to send a posed clay render as `<Picture 1>` and one photo per character after it.
+
+1. Pose the figures and pick an export size. The **MiniMax H3 Image** group in the resolution list has 2048 × 2048, 1536 × 2048, 2048 × 1536, 1152 × 2048, 2048 × 1152 and 3136 × 1344. ComfyUI rescales each reference to a short edge of 1024–2048 px on a 32 px grid, so these sizes go in without much resampling.
+2. Leave **Tint by figure color** on so each figure can be named by its color (teal, amber, coral, sky blue, purple, lime green, pink, royal blue, yellow, brown, in palette order).
+3. Download **Clay**, or use `clay.png` from Export all. Load it first, as `<Picture 1>`.
+4. Press **Copy H3 prompt** (the same text is `h3_prompt.txt` in the zip). It lists the visible figures left to right as they appear in the export frame and maps the first to `<Picture 2>`, the next to `<Picture 3>`, and so on. Load the character photos in that order. Figures entirely outside the frame are left out. With tint off, the color words are dropped.
+5. The last line suggests an output size: the largest size with both edges on the 32 px grid, at most 16,777,216 pixels (4096 × 4096), whose aspect ratio is as close to the export's as the grid allows. ComfyUI's own size table rounds slightly above that limit for some ratios (for example 3552 × 4736 for 3:4); the suggestion here stays under it.
+
+Edit the prompt before you run it: describe the setting, lighting and clothing you want. The wording lives in one constant, `H3_PROMPT` in `src/poser/h3.ts`.
+
+**Untested.** This route has not been run against H3 Image yet; Posewright cannot run the model, and the prompt and the clay look are a starting point taken from the model's documentation, which lists turning an untextured render into a photo as a use of edit mode. Check the result in ComfyUI before you rely on it.
 
 ## License
 
