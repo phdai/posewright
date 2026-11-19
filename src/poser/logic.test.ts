@@ -692,3 +692,19 @@ describe("MiniMax H3 Image", () => {
     assert.equal(lines[4], "Suggested output size: 4736 × 3552");
   });
 });
+
+describe("gizmo targets", () => {
+  it("tells the head bone apart from the head IK helper that shares its name", () => {
+    const view = new FigureView(makeFigure(1));
+    const bone = view.bones.get("head");
+    const helper = view.targets.get("head");
+    assert.ok(bone && helper);
+    assert.equal(bone.name, helper.name);
+    assert.equal(view.ikTargetOf(bone), null);
+    assert.equal(view.ikTargetOf(helper), "head");
+    const pelvis = view.targets.get("pelvis");
+    assert.ok(pelvis);
+    assert.equal(view.ikTargetOf(pelvis), "pelvis");
+    view.dispose();
+  });
+});

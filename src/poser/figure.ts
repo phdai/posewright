@@ -268,6 +268,15 @@ export class FigureView {
     }
   }
 
+  /**
+   * IK target key when `obj` is one of this figure's target helpers, else null.
+   * Matches by identity: the head helper and the head bone are both named "head".
+   */
+  ikTargetOf(obj: Object3D): string | null {
+    for (const [key, helper] of this.targets) if (helper === obj) return key;
+    return null;
+  }
+
   /** Bone quaternion as XYZ degrees. Pass the previous total so the result does not flip. */
   readEuler(name: string, prev?: { x: number; y: number; z: number }): { x: number; y: number; z: number } {
     const b = this.bones.get(name);

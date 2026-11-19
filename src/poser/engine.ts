@@ -1329,9 +1329,10 @@ export class PoserEngine {
       view.holdTarget = null;
       return;
     }
-    if (obj instanceof Object && view.targets.has(obj.name)) {
-      view.holdTarget = obj.name;
-      if (obj.name === "pelvis") {
+    const targetKey = view.ikTargetOf(obj);
+    if (targetKey) {
+      view.holdTarget = targetKey;
+      if (targetKey === "pelvis") {
         const hips = view.segments.find((s) => s.name === "hips");
         if (hips) {
           view.data.pelvisOffset = {
@@ -1341,7 +1342,7 @@ export class PoserEngine {
           };
         }
       } else {
-        const key = obj.name as keyof FigureData["ikTargets"];
+        const key = targetKey as keyof FigureData["ikTargets"];
         view.data.ikTargets[key] = { x: obj.position.x, y: obj.position.y, z: obj.position.z };
       }
       return;
