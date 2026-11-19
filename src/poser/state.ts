@@ -1,4 +1,4 @@
-import { NEUTRAL_FACE, emptyFaceOffsets } from "./face.ts";
+import { NEUTRAL_FACE, clampFace, clampFaceOffsets, emptyFaceOffsets } from "./face.ts";
 import { v3, type BodyParams, type ExportSettings, type FigureData, type SceneState, type Vec3 } from "./types.ts";
 import { clampParams } from "./proportions.ts";
 import { poseById, writeHand, type Pose } from "./pose.ts";
@@ -142,6 +142,7 @@ export function makeFigure(index: number, presetId = "adult-f"): FigureData {
     name: `Figure ${index}`,
     color: FIGURE_COLORS[(index - 1) % FIGURE_COLORS.length],
     visible: true,
+    locked: false,
     params: clampParams({ ...preset.params }),
     position: v3((index - 1) * 0.85 - 0, 0, 0),
     rotationY: 0,
@@ -156,6 +157,45 @@ export function makeFigure(index: number, presetId = "adult-f"): FigureData {
     faceOffsets: emptyFaceOffsets(),
     faceMirror: true,
   };
+}
+
+/**
+ * Fill fields that older scene files and undo snapshots may lack. Scenes saved
+ * before a field existed must still load, so every new figure field gets a default here.
+ */
+export function normalizeFigure(fig: FigureData): FigureData {
+  fig.visible = fig.visible !== false;
+  fig.locked = fig.locked === true;
+  fig.detailedFeet = fig.detailedFeet === true;
+  fig.detailedHead = fig.detailedHead === true;
+  fig.face = clampFace(fig.face);
+  fig.faceOffsets = clampFaceOffsets(fig.faceOffsets);
+  if (typeof fig.faceMirror !== "boolean") fig.faceMirror = true;
+  return fig;
+}
+
+/** Visibility flags for "Solo": only the chosen figure stays visible. */
+export function soloVisibility(figures: { id: string }[], id: string): boolean[] {
+  return figures.map((f) => f.id === id);
+}
+
+/** True when the figure is the only visible one in a scene of more than one figure. */
+export function isSoloed(figures: { id: string; visible: boolean }[], id: string): boolean {
+  if (figures.length < 2) return false;
+  return figures.every((f) => f.visible === (f.id === id));
+}
+
+/** The viewport may pick, hover or drag a figure only when it is shown and not locked. */
+export function isPickable(fig: { visible: boolean; locked?: boolean }): boolean {
+  return fig.visible && fig.locked !== true;
+}
+
+/** Export all is Shift+E in orbit mode. Plain E does nothing there; in fly mode E climbs. */
+export function isExportAllKey(
+  e: { key: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean; altKey: boolean },
+  mode: "orbit" | "fly",
+): boolean {
+  return mode === "orbit" && e.key.toLowerCase() === "e" && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey;
 }
 
 export function defaultScene(): SceneState {

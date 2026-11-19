@@ -26,7 +26,8 @@ The pure-logic tests (proportions, projection, OpenPose JSON, PNG/ZIP, IK) live 
 | Scroll | Zoom |
 | C | Toggle orbit / fly |
 | WASD | Fly. **A strafes left, D strafes right** |
-| Q / E | Fly down / up. In orbit mode, E exports everything |
+| Q / E | Fly down / up |
+| Shift+E | Export all, in orbit mode. Plain E does nothing in orbit mode, so a stray keypress no longer starts an export |
 | Shift | Fly faster |
 | G / R | Move gizmo / rotate gizmo |
 | Arrow keys | Nudge the selected joint. Up/Down are X, Left/Right are Y. Shift is 5° |
@@ -49,6 +50,10 @@ Presets (Adult female average, Adult male muscular, Child 6y, Teen male slim, El
 The mesh is a `SkinnedMesh` of lofted tubes and ellipsoids, roughly a few thousand triangles, including a 3-bone chain per finger. The torso is three bones — lower, mid, and chest — so a forward fold bends as a curve instead of one tube creasing through itself. **Detailed feet** (pose panel) adds a heel and a toe chain — two bones on the big toe, three on the others. Leave it off for the original single-bone foot, which is the better match for a ComfyUI control image. **Detailed head** draws the 68 face landmarks on the figure. Leave it off for the plain head. The **Face** tab is where those points are shaped (jaw, smile, brows, blink, mouth width). The head mesh itself does not change. Face landmarks stay offsets on the head bone, scaled by head length, so they stay put on a child or an adult.
 
 Changing a slider rebuilds the mesh and keeps the current joint rotations.
+
+Each figure gets the first palette color no other figure is using, so deleting a figure and adding another gives the new one the freed color. New figures stand in the first free spot of a grid of rows of five, 0.9 m apart, each row 1.1 m further back.
+
+In the figure list, **Solo** shows that figure and hides the others (press it again, or **Show all**, to bring them back; it is one undo step). **Lock** stops the viewport from picking, hovering or moving a figure, which helps when figures overlap. The panels still edit a locked figure. Scenes saved before these buttons existed load with every figure unlocked.
 
 ## Poses
 
@@ -74,7 +79,7 @@ Every PNG is 8-bit RGB, opaque, no alpha. Dimensions snap to a multiple of 8 (a 
 - **3D model** is a glossy shaded body on black, one material color per figure, for Anima's `anima_3dpose_6200` ControlNet-LLLite. **3D outline** is that same plate plus a complementary-color silhouette and overlap stroke (4 px at a 768 px short side) for `anima_3dpose_outline_7000`.
 - **Export all** writes a store-only zip: `openpose.png`, `wireframe.png`, `depth.png`, `normal.png`, `mask_combined.png`, `model.png`, `model_outline.png`, `mask_figureN.png`, `openpose_figureN.png`, `openpose.json`, `settings.json`. The zip name and single-file downloads include a timestamp. Per-figure files are only written for figures that exist.
 
-The preview strip updates as you pose. **Align** draws the skeleton on top of the wireframe so you can check that they share pixels.
+The preview strip updates as you pose. Untick **Live previews** to stop it re-rendering on a slow machine; downloads and Export all always render the current scene. **Align** draws the skeleton on top of the wireframe so you can check that they share pixels.
 
 ## ComfyUI
 

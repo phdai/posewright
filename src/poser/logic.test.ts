@@ -17,10 +17,15 @@ import {
   SPOT_RADIUS,
   clone,
   defaultScene,
+  isExportAllKey,
+  isPickable,
+  isSoloed,
   makeFigure,
   nextFigureId,
   nextFreeColor,
   nextFreeSpot,
+  normalizeFigure,
+  soloVisibility,
   validSelection,
 } from "./state.ts";
 import type { BodyParams } from "./types.ts";
@@ -502,5 +507,54 @@ describe("figure palette and placement", () => {
     assert.deepEqual(validSelection({ figureId: "f9", bone: "head" }, figures), { figureId: "f2", bone: null });
     assert.equal(validSelection({ figureId: "f5", bone: "head" }, figures).figureId, "f5");
     assert.deepEqual(validSelection(undefined, []), { figureId: null, bone: null });
+  });
+});
+
+describe("solo, lock and shortcuts", () => {
+  it("solo keeps only the chosen figure visible and detects the solo state", () => {
+    const figures = [makeFigure(1), makeFigure(2), makeFigure(3)];
+    assert.deepEqual(soloVisibility(figures, "f2"), [false, true, false]);
+    assert.equal(isSoloed(figures, "f2"), false);
+    figures.forEach((f, i) => {
+      f.visible = soloVisibility(figures, "f2")[i];
+    });
+    assert.equal(isSoloed(figures, "f2"), true);
+    assert.equal(isSoloed(figures, "f1"), false);
+    assert.equal(isSoloed([makeFigure(1)], "f1"), false);
+  });
+
+  it("does not let the viewport pick hidden or locked figures", () => {
+    const fig = makeFigure(1);
+    assert.equal(isPickable(fig), true);
+    fig.locked = true;
+    assert.equal(isPickable(fig), false);
+    fig.locked = false;
+    fig.visible = false;
+    assert.equal(isPickable(fig), false);
+  });
+
+  it("loads a figure saved before lock existed as unlocked and keeps its visibility", () => {
+    const old = clone(makeFigure(1)) as Partial<ReturnType<typeof makeFigure>>;
+    delete old.locked;
+    old.visible = false;
+    const fig = normalizeFigure(old as ReturnType<typeof makeFigure>);
+    assert.equal(fig.locked, false);
+    assert.equal(fig.visible, false);
+    assert.equal(normalizeFigure({ ...makeFigure(2), locked: true }).locked, true);
+  });
+
+  it("exports all on Shift+E in orbit mode only", () => {
+    const k = (key: string, shiftKey: boolean, extra: Partial<{ ctrlKey: boolean; metaKey: boolean; altKey: boolean }> = {}) => ({
+      key,
+      shiftKey,
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      ...extra,
+    });
+    assert.equal(isExportAllKey(k("E", true), "orbit"), true);
+    assert.equal(isExportAllKey(k("e", false), "orbit"), false);
+    assert.equal(isExportAllKey(k("E", true), "fly"), false);
+    assert.equal(isExportAllKey(k("E", true, { ctrlKey: true }), "orbit"), false);
   });
 });

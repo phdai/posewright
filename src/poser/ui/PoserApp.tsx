@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type MutableRefObject } from "react";
 import { PoserEngine } from "../engine.ts";
-import { BODY_PRESETS, MAX_FIGURES } from "../state.ts";
+import { BODY_PRESETS, MAX_FIGURES, isSoloed } from "../state.ts";
 import { POSE_PRESETS, jointGroup, jointLabel, jointNames, limitsFor } from "../pose.ts";
 import { FACE_GROUPS, FACE_PRESETS, faceGroupOf } from "../face.ts";
 import { RESOLUTIONS, snapResolution } from "../resolution.ts";
@@ -241,18 +241,45 @@ function FigurePanel({
         </button>
       </div>
       <ul className="scroll-thin flex max-h-64 shrink-0 flex-col gap-1 overflow-auto">
-        {figures.map((fig) => (
-          <li key={fig.id} className={`flex shrink-0 items-center gap-2 rounded-sm border px-2 py-1 ${fig.id === selected?.id ? "border-accent" : "border-line"}`}>
-            <button type="button" title={`Select ${fig.name}`} className="flex min-h-11 flex-1 items-center gap-2 text-left text-sm" onClick={() => engine.selectFigure(fig.id)}>
-              <span className="inline-block size-3 rounded-full" style={{ background: fig.color }} />
-              <span className="truncate">{fig.name}</span>
-            </button>
-            <button type="button" title={fig.visible ? "Hide figure" : "Show figure"} className={btn()} onClick={() => engine.setVisible(fig.id, !fig.visible)}>
-              {fig.visible ? "Hide" : "Show"}
-            </button>
-          </li>
-        ))}
+        {figures.map((fig) => {
+          const solo = isSoloed(figures, fig.id);
+          return (
+            <li key={fig.id} className={`flex shrink-0 items-center gap-1 rounded-sm border px-2 py-1 ${fig.id === selected?.id ? "border-accent" : "border-line"}`}>
+              <button type="button" title={`Select ${fig.name}`} className="flex min-h-11 min-w-0 flex-1 items-center gap-2 text-left text-sm" onClick={() => engine.selectFigure(fig.id)}>
+                <span className="inline-block size-3 shrink-0 rounded-full" style={{ background: fig.color }} />
+                <span className={`truncate ${fig.visible ? "" : "text-muted"}`}>{fig.name}</span>
+                {fig.locked && <span className="shrink-0 text-xs text-muted">locked</span>}
+              </button>
+              <button
+                type="button"
+                aria-pressed={solo}
+                title={solo ? "Show every figure again" : `Show only ${fig.name}. Undo brings the others back.`}
+                className={btn(solo)}
+                onClick={() => (solo ? engine.showAll() : engine.soloFigure(fig.id))}
+              >
+                Solo
+              </button>
+              <button
+                type="button"
+                aria-pressed={fig.locked}
+                title={fig.locked ? "Unlock: the viewport can pick and move this figure again" : "Lock: the viewport cannot pick or move this figure. The panels still edit it."}
+                className={btn(fig.locked)}
+                onClick={() => engine.setLocked(fig.id, !fig.locked)}
+              >
+                {fig.locked ? "Unlock" : "Lock"}
+              </button>
+              <button type="button" title={fig.visible ? "Hide figure" : "Show figure"} className={btn()} onClick={() => engine.setVisible(fig.id, !fig.visible)}>
+                {fig.visible ? "Hide" : "Show"}
+              </button>
+            </li>
+          );
+        })}
       </ul>
+      {figures.some((f) => !f.visible) && (
+        <button type="button" title="Make every figure visible" className={`${btn()} self-start`} onClick={() => engine.showAll()}>
+          Show all
+        </button>
+      )}
       {selected && (
         <>
           <div className="flex gap-2">
@@ -729,7 +756,7 @@ function ExportPanel({
         <button type="button" title="Download OpenPose JSON" className={btn()} onClick={() => void engine.downloadJson()}>
           JSON
         </button>
-        <button type="button" title="Zip every conditioning image (E in orbit mode)" className={btn(true)} onClick={() => void engine.exportAll()}>
+        <button type="button" title="Zip every conditioning image (Shift+E in orbit mode)" className={btn(true)} onClick={() => void engine.exportAll()}>
           Export all
         </button>
       </div>
@@ -764,7 +791,12 @@ function ExportPanel({
         <input type="checkbox" checked={settings.depthAuto} onChange={(e) => engine.setExport({ depthAuto: e.target.checked })} />
         Auto depth range
       </label>
-      <div className="grid grid-cols-3 gap-1">
+      <label className="flex min-h-11 items-center gap-2 text-sm" title="Re-render the small previews as you pose. Turn off on a slow machine. Downloads and Export all are not affected.">
+        <input type="checkbox" checked={engine.getLivePreviews()} onChange={(e) => engine.setLivePreviews(e.target.checked)} />
+        Live previews
+      </label>
+      {!engine.getLivePreviews() && <p className="text-xs text-muted">Previews are paused and show the last frame. Downloads still render the current scene.</p>}
+      <div className={`grid grid-cols-3 gap-1 ${engine.getLivePreviews() ? "" : "opacity-50"}`}>
         {(
           [
             ["pose", "Pose"],
@@ -957,7 +989,8 @@ function Help({ onClose }: { onClose: () => void }) {
     ["Scroll", "Zoom"],
     ["C", "Toggle orbit / fly"],
     ["WASD", "Fly move. A left, D right"],
-    ["Q / E", "Fly down / up (orbit: E exports)"],
+    ["Q / E", "Fly down / up"],
+    ["Shift+E", "Export all (orbit mode)"],
     ["Shift", "Fly faster"],
     ["G / R", "Move gizmo / rotate gizmo"],
     ["Arrows", "Nudge joint, or the selected face point"],

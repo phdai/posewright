@@ -47,6 +47,8 @@ export type FigureData = {
   name: string;
   color: string;
   visible: boolean;
+  /** Locked figures cannot be picked or moved in the viewport. Panels still edit them. */
+  locked: boolean;
   params: BodyParams;
   /** Ground-plane transform. Y lifts the figure off the floor. */
   position: Vec3;

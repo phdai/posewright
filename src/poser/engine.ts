@@ -36,10 +36,14 @@ import {
   clone,
   defaultScene,
   downloadBlob,
+  isExportAllKey,
+  isPickable,
   makeFigure,
+  normalizeFigure,
   nextFigureId,
   nextFreeColor,
   nextFreeSpot,
+  soloVisibility,
   stamp,
   validSelection,
 } from "./state.ts";
@@ -153,6 +157,8 @@ export class PoserEngine {
     align?: HTMLCanvasElement;
   } = {};
   private previewTimer = 0;
+  /** When false the preview strip keeps its last frame. Downloads and Export all never read it. */
+  private livePreviews = readLivePreviews();
   private previewRunning = false;
   private previewQueued = false;
   private disposed = false;
@@ -422,6 +428,37 @@ export class PoserEngine {
     this.emit();
   }
 
+  /** Show this figure and hide the rest. Uses the visible flag, so one undo brings the others back. */
+  soloFigure(id: string) {
+    if (!this.state.figures.some((f) => f.id === id)) return;
+    const next = soloVisibility(this.state.figures, id);
+    if (this.state.figures.every((f, i) => f.visible === next[i])) return;
+    this.pushHistory();
+    this.state.figures.forEach((f, i) => {
+      f.visible = next[i];
+    });
+    this.touch();
+  }
+
+  showAll() {
+    if (this.state.figures.every((f) => f.visible)) return;
+    this.pushHistory();
+    for (const f of this.state.figures) f.visible = true;
+    this.touch();
+  }
+
+  setLocked(id: string, locked: boolean) {
+    const fig = this.state.figures.find((f) => f.id === id);
+    if (!fig || fig.locked === locked) return;
+    this.pushHistory();
+    fig.locked = locked;
+    if (locked) {
+      this.hoverBone = null;
+      this.hoverFace = null;
+    }
+    this.touch();
+  }
+
   setParams(id: string, patch: Partial<BodyParams>) {
     const fig = this.state.figures.find((f) => f.id === id);
     if (!fig) return;
@@ -490,11 +527,7 @@ export class PoserEngine {
   }
 
   private normalizeFigure(fig: FigureData) {
-    fig.detailedFeet = fig.detailedFeet === true;
-    fig.detailedHead = fig.detailedHead === true;
-    fig.face = clampFace(fig.face);
-    fig.faceOffsets = clampFaceOffsets(fig.faceOffsets);
-    if (typeof fig.faceMirror !== "boolean") fig.faceMirror = true;
+    normalizeFigure(fig);
   }
 
   /**
@@ -950,7 +983,7 @@ export class PoserEngine {
     }
     this.pointerFrom(e);
     this.raycaster.setFromCamera(this.pointer, this.camera);
-    const markers = this.views.flatMap((v) => (v.data.visible ? [...v.markers.values()] : []));
+    const markers = this.views.flatMap((v) => (isPickable(v.data) ? [...v.markers.values()] : []));
     const hit = this.raycaster.intersectObjects(markers, false)[0];
     this.hoverBone = hit ? (hit.object.userData.bone as string) : null;
     this.hoverFace = this.faceEdit ? this.pickFacePoint(e) : null;
@@ -982,7 +1015,7 @@ export class PoserEngine {
     this.pointerFrom(e);
     this.raycaster.setFromCamera(this.pointer, this.camera);
     const pickable = this.state.showJoints || !this.state.showBody;
-    const markers = this.views.flatMap((v) => (v.data.visible && pickable ? [...v.markers.values()] : []));
+    const markers = this.views.flatMap((v) => (isPickable(v.data) && pickable ? [...v.markers.values()] : []));
     const hit = this.raycaster.intersectObjects(markers, false)[0];
     if (hit) {
       this.state.selection = {
@@ -993,7 +1026,7 @@ export class PoserEngine {
       this.touch();
       return;
     }
-    const meshes = this.views.filter((v) => v.data.visible).map((v) => v.mesh);
+    const meshes = this.views.filter((v) => isPickable(v.data)).map((v) => v.mesh);
     const body = this.raycaster.intersectObjects(meshes, false)[0];
     if (body) {
       const view = this.views.find((v) => v.mesh === body.object);
@@ -1014,7 +1047,7 @@ export class PoserEngine {
   /** Nearest landmark under the cursor, in the selected figure only. */
   private pickFacePoint(e: PointerEvent): number | null {
     const view = this.selected();
-    if (!view || !view.facePoints.visible) return null;
+    if (!view || !view.facePoints.visible || view.data.locked) return null;
     const rect = this.renderer.domElement.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
@@ -1154,15 +1187,20 @@ export class PoserEngine {
     }
     if (!e.ctrlKey && !e.metaKey) {
       const nudge = nudgeFromCode(e.code);
+      const lockedSel = this.selected()?.data.locked === true;
       if (nudge && this.faceEdit) {
         const point = this.state.selection.facePoint;
-        if (point != null) {
+        if (point != null && !lockedSel) {
           e.preventDefault();
           if (!e.repeat) this.pushHistory();
           this.nudgeFacePoint(point, e.code, e.shiftKey, e.altKey);
         } else {
           e.preventDefault();
         }
+        return;
+      }
+      if (nudge && !e.altKey && this.state.selection.bone && lockedSel) {
+        e.preventDefault();
         return;
       }
       if (nudge && !e.altKey && this.state.selection.bone) {
@@ -1173,12 +1211,16 @@ export class PoserEngine {
         return;
       }
     }
+    if (isExportAllKey(e, this.mode)) {
+      e.preventDefault();
+      void this.exportAll();
+      return;
+    }
     if (this.mode === "fly" && (key === "e" || key === "q")) return;
     if (key === "g") this.setTool("translate");
     else if (key === "r") this.setTool("rotate");
     else if (key === "f") this.frameSelected();
     else if (key === "c") this.setCameraMode(this.mode === "orbit" ? "fly" : "orbit");
-    else if (key === "e") void this.exportAll();
   };
 
   private onKeyUp = (e: KeyboardEvent) => {
@@ -1202,7 +1244,7 @@ export class PoserEngine {
     }
     const view = this.selected();
     this.gizmo.enabled = this.mode === "orbit";
-    if (!view || this.mode === "fly") {
+    if (!view || this.mode === "fly" || view.data.locked) {
       this.gizmo.detach();
       return;
     }
@@ -1812,6 +1854,17 @@ export class PoserEngine {
     this.setCameraMode(cam.mode);
   }
 
+  getLivePreviews(): boolean {
+    return this.livePreviews;
+  }
+
+  setLivePreviews(on: boolean) {
+    if (this.livePreviews === on) return;
+    this.livePreviews = on;
+    writeLivePreviews(on);
+    this.emit();
+  }
+
   setPreviewCanvases(canvases: PoserEngine["preview"]) {
     this.preview = canvases;
     this.schedulePreview();
@@ -1842,12 +1895,17 @@ export class PoserEngine {
   }
 
   private async renderPreviewInner() {
-    const pose = this.preview.pose;
-    if (!pose) return;
     const aspect = this.state.export.width / this.state.export.height;
     const w = 256;
     const h = Math.max(64, Math.round(w / aspect / 8) * 8);
     const ww = Math.round(w / 8) * 8;
+    if (!this.livePreviews) {
+      // Keep the small-figure warning current without any GPU work.
+      this.updateWarning(this.people(this.exportCamera(ww, h), ww, h), h);
+      return;
+    }
+    const pose = this.preview.pose;
+    if (!pose) return;
     const drawInto = (el: HTMLCanvasElement | undefined, src: HTMLCanvasElement) => {
       if (!el) return;
       el.width = src.width;
@@ -1966,6 +2024,25 @@ export class PoserEngine {
     this.exporter.dispose();
     this.orbit.dispose();
     this.gizmo.dispose();
+  }
+}
+
+const LIVE_PREVIEWS_KEY = "posewright.livePreviews";
+
+/** A per-browser preference, not part of the scene. Storage may be blocked, so fall back to on. */
+function readLivePreviews(): boolean {
+  try {
+    return window.localStorage.getItem(LIVE_PREVIEWS_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+function writeLivePreviews(on: boolean) {
+  try {
+    window.localStorage.setItem(LIVE_PREVIEWS_KEY, on ? "on" : "off");
+  } catch {
+    // Ignore: the toggle still works for this session.
   }
 }
 
